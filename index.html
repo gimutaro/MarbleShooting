@@ -75,7 +75,9 @@
     const PITCH_LIMIT = Math.PI / 2 - 0.01;
     const BULLET_SPEED = 40;
     const BULLET_LIFETIME = 1.5;
-    const TOTAL_TARGETS = 20;
+    const ROUND_DURATION = 60;
+    const MAX_ACTIVE_TARGETS = 20;
+    const SCORE_STORAGE_KEY = "meteorHighScore";
 
     const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
     renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -88,6 +90,13 @@
     camera.position.set(0, 1.6, 3.5);
     const initialLookTarget = new THREE.Vector3(0, 1.6, -20);
     camera.lookAt(initialLookTarget);
+
+    // 隕石の陰影表示用ライト
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.45);
+    scene.add(ambientLight);
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.9);
+    directionalLight.position.set(3, 5, 2);
+    scene.add(directionalLight);
 
     const cameraEuler = new THREE.Euler(0, 0, 0, "YXZ");
     cameraEuler.setFromQuaternion(camera.quaternion);
@@ -115,13 +124,16 @@
 
     const targets = [];
     const bullets = [];
+    const fragments = [];
+    let score = 0;
+    let bestScore = 0;
+    let roundActive = false;
+    let roundEnded = false;
+    let timeRemaining = ROUND_DURATION;
 
-    const targetOuterGeometry = new THREE.TorusGeometry(1.5, 0.12, 16, 32);
-    const targetMiddleGeometry = new THREE.TorusGeometry(0.95, 0.1, 12, 24);
-    const targetInnerGeometry = new THREE.OctahedronGeometry(0.45);
-    const targetOuterMaterial = new THREE.MeshBasicMaterial({ color: 0xff6f3c, wireframe: true });
-    const targetMiddleMaterial = new THREE.MeshBasicMaterial({ color: 0xffc37a, wireframe: true });
-    const targetInnerMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true });
+    // 隕石ターゲット用マテリアル（通常のシェーディング）
+    const meteorMaterial = new THREE.MeshStandardMaterial({ color: 0x8d8a84, roughness: 0.95, metalness: 0.08 });
+    const meteorAccentMaterial = new THREE.MeshStandardMaterial({ color: 0x6e6b66, roughness: 0.98, metalness: 0.05 });
     const bulletGeometry = new THREE.SphereGeometry(0.15, 12, 12);
     const bulletMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff });
 
@@ -143,10 +155,13 @@
 
     function updateScoreDisplay() {
       if (!scoreDisplay) return;
-      if (targetsHit >= TOTAL_TARGETS) {
-        scoreDisplay.textContent = `Targets: ${targetsHit} / ${TOTAL_TARGETS} - CLEAR`;
+      if (roundActive) {
+        const timeText = Math.max(0, timeRemaining).toFixed(1);
+        scoreDisplay.textContent = `Score: ${score}  Best: ${bestScore}  Time: ${timeText}s`;
+      } else if (roundEnded) {
+        scoreDisplay.textContent = `Time Up! Score: ${score}  Best: ${bestScore}  Shoot to restart`;
       } else {
-        scoreDisplay.textContent = `Targets: ${targetsHit} / ${TOTAL_TARGETS}`;
+        scoreDisplay.textContent = `Shoot to start  Best: ${bestScore}`;
       }
     }
 
@@ -391,75 +406,258 @@
     splat.rotateX(Math.PI);
     scene.add(splat);
 
-    function createTarget(x, y, z) {
+    function createMeteorMesh(radius = 1.2) {
+      // 低ポリ隕石: 正二十面体をノイズで歪ませる
+      const geom = new THREE.IcosahedronGeometry(radius, 1);
+      const pos = geom.attributes.position;
+      const tmp = new THREE.Vector3();
+      for (let i = 0; i < pos.count; i++) {
+        tmp.fromBufferAttribute(pos, i);
+        const n = tmp.clone().normalize();
+        const noise = (Math.sin(tmp.x * 2.3) + Math.sin(tmp.y * 1.7) + Math.sin(tmp.z * 2.9)) * 0.12;
+        const scale = 1 + noise + (Math.random() - 0.5) * 0.06;
+        tmp.copy(n).multiplyScalar(radius * scale);
+        pos.setXYZ(i, tmp.x, tmp.y, tmp.z);
+      }
+      geom.computeVertexNormals();
+      const core = new THREE.Mesh(geom, meteorMaterial.clone());
+
+      // 表面の岩片（小さな起伏）
       const group = new THREE.Group();
-      const outer = new THREE.Mesh(targetOuterGeometry, targetOuterMaterial);
-      const middle = new THREE.Mesh(targetMiddleGeometry, targetMiddleMaterial);
-      const inner = new THREE.Mesh(targetInnerGeometry, targetInnerMaterial);
-      group.add(outer);
-      group.add(middle);
-      group.add(inner);
+      group.add(core);
+      const bumps = 5 + Math.floor(Math.random() * 4);
+      for (let i = 0; i < bumps; i++) {
+        const b = new THREE.IcosahedronGeometry(radius * THREE.MathUtils.randFloat(0.12, 0.22), 0);
+        const m = new THREE.Mesh(b, meteorAccentMaterial.clone());
+        // ランダムな位置に付ける
+        const dir = new THREE.Vector3(
+          Math.random() * 2 - 1,
+          Math.random() * 2 - 1,
+          Math.random() * 2 - 1
+        ).normalize();
+        const dist = radius * THREE.MathUtils.randFloat(0.8, 1.05);
+        m.position.copy(dir.multiplyScalar(dist));
+        m.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+        group.add(m);
+      }
+      return group;
+    }
+
+    function createTarget(x, y, z, options = {}) {
+      const { velocity = null, maxLife = null } = options;
+      const group = new THREE.Group();
+      const meteor = createMeteorMesh(1.8);
+      group.add(meteor);
       group.position.set(x, y, z);
-      group.userData = { hit: false, fade: 0, radius: 1.6 };
+      // 隕石は自転させる
+      const spinAxis = new THREE.Vector3(Math.random(), Math.random(), Math.random()).normalize();
+      const spinSpeed = THREE.MathUtils.randFloat(0.4, 1.0);
+      const fallVelocity = velocity ? velocity.clone() : new THREE.Vector3(
+        THREE.MathUtils.randFloatSpread(0.4),
+        -THREE.MathUtils.randFloat(0.25, 0.5),
+        THREE.MathUtils.randFloat(0.4, 1.1)
+      );
+      const lifespan = maxLife ?? THREE.MathUtils.randFloat(9, 14);
+      group.scale.setScalar(1);
+      group.userData = {
+        hit: false,
+        fade: 0,
+        radius: 1.8,
+        spinAxis,
+        spinSpeed,
+        velocity: fallVelocity,
+        life: 0,
+        maxLife: lifespan
+      };
       scene.add(group);
       targets.push(group);
     }
 
-    function createTargets() {
-      const minX = -22;
-      const maxX = 22;
-      const minZ = -58;
-      const maxZ = -18;
-      const minY = 2.2;
-      const maxY = 5.0;
+    function createShatter(position) {
+      const count = 16 + Math.floor(Math.random() * 10);
+      for (let i = 0; i < count; i++) {
+        const r = THREE.MathUtils.randFloat(0.18, 0.35);
+        const geom = new THREE.IcosahedronGeometry(r, 0);
+        const useAccent = Math.random() < 0.45;
+        const mat = (useAccent ? meteorAccentMaterial : meteorMaterial).clone();
+        mat.transparent = true;
+        const piece = new THREE.Mesh(geom, mat);
+        piece.position.copy(position);
+        piece.position.x += (Math.random() - 0.5) * 0.3;
+        piece.position.y += (Math.random() - 0.5) * 0.3;
+        piece.position.z += (Math.random() - 0.5) * 0.3;
+        piece.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+        const dir = new THREE.Vector3(Math.random() - 0.5, Math.random(), Math.random() - 0.5).normalize();
+        const speed = THREE.MathUtils.randFloat(4, 9);
+        const angVel = new THREE.Vector3(
+          THREE.MathUtils.randFloat(-6, 6),
+          THREE.MathUtils.randFloat(-6, 6),
+          THREE.MathUtils.randFloat(-6, 6)
+        );
+        fragments.push({ mesh: piece, velocity: dir.multiplyScalar(speed), life: 1.2, angular: angVel });
+        scene.add(piece);
+      }
+    }
+
+    function spawnRandomTarget() {
+      const minX = -24;
+      const maxX = 24;
+      const minZ = -72;
+      const maxZ = -28;
+      const minY = 6.5;
+      const maxY = 11.0;
       const minSeparation = 5;
       const maxAttemptsPerTarget = 300;
       const candidate = new THREE.Vector3();
 
-      for (let i = 0; i < TOTAL_TARGETS; i++) {
-        let placed = false;
-        let attempts = 0;
+      let placed = false;
+      let attempts = 0;
 
-        while (!placed && attempts < maxAttemptsPerTarget) {
-          candidate.set(
-            THREE.MathUtils.randFloat(minX, maxX),
-            THREE.MathUtils.randFloat(minY, maxY),
-            THREE.MathUtils.randFloat(minZ, maxZ)
-          );
+      while (!placed && attempts < maxAttemptsPerTarget) {
+        candidate.set(
+          THREE.MathUtils.randFloat(minX, maxX),
+          THREE.MathUtils.randFloat(minY, maxY),
+          THREE.MathUtils.randFloat(minZ, maxZ)
+        );
 
-          let tooClose = false;
-          for (let j = 0; j < targets.length; j++) {
-            if (candidate.distanceToSquared(targets[j].position) < minSeparation * minSeparation) {
-              tooClose = true;
-              break;
-            }
+        let tooClose = false;
+        for (let j = 0; j < targets.length; j++) {
+          if (candidate.distanceToSquared(targets[j].position) < minSeparation * minSeparation) {
+            tooClose = true;
+            break;
           }
-
-          if (!tooClose) {
-            createTarget(candidate.x, candidate.y, candidate.z);
-            placed = true;
-          }
-
-          attempts++;
         }
 
-        if (!placed) {
-          // Fallback: place without separation constraint to ensure quota
-          createTarget(
-            THREE.MathUtils.randFloat(minX, maxX),
-            THREE.MathUtils.randFloat(minY, maxY),
-            THREE.MathUtils.randFloat(minZ, maxZ)
-          );
+        if (!tooClose) {
+          const lateralX = THREE.MathUtils.randFloatSpread(0.6);
+          const downward = THREE.MathUtils.randFloat(0.25, 0.45);
+          const forward = THREE.MathUtils.randFloat(0.6, 1.4);
+          const meteorVelocity = new THREE.Vector3(lateralX, -downward, forward);
+          const maxLife = THREE.MathUtils.randFloat(8, 13);
+          createTarget(candidate.x, candidate.y, candidate.z, { velocity: meteorVelocity, maxLife });
+          placed = true;
+        }
+
+        attempts++;
+      }
+
+      if (!placed) {
+        const fallbackVelocity = new THREE.Vector3(
+          THREE.MathUtils.randFloatSpread(0.6),
+          -THREE.MathUtils.randFloat(0.25, 0.45),
+          THREE.MathUtils.randFloat(0.6, 1.4)
+        );
+        const maxLife = THREE.MathUtils.randFloat(8, 13);
+        createTarget(
+          THREE.MathUtils.randFloat(minX, maxX),
+          THREE.MathUtils.randFloat(minY, maxY),
+          THREE.MathUtils.randFloat(minZ, maxZ),
+          { velocity: fallbackVelocity, maxLife }
+        );
+      }
+    }
+
+    function fillTargets() {
+      while (targets.length < MAX_ACTIVE_TARGETS) {
+        spawnRandomTarget();
+      }
+    }
+
+    function clearTargets() {
+      for (let i = targets.length - 1; i >= 0; i--) {
+        scene.remove(targets[i]);
+      }
+      targets.length = 0;
+    }
+
+    function clearBullets() {
+      for (let i = bullets.length - 1; i >= 0; i--) {
+        scene.remove(bullets[i].mesh);
+      }
+      bullets.length = 0;
+    }
+
+    function clearFragments() {
+      for (let i = fragments.length - 1; i >= 0; i--) {
+        scene.remove(fragments[i].mesh);
+      }
+      fragments.length = 0;
+    }
+
+    function startRound() {
+      if (roundActive) return;
+      const shouldResetTargets = roundEnded || targets.length === 0;
+      roundActive = true;
+      roundEnded = false;
+      timeRemaining = ROUND_DURATION;
+      score = 0;
+      clearBullets();
+      clearFragments();
+      if (shouldResetTargets) {
+        clearTargets();
+      }
+      fillTargets();
+      updateScoreDisplay();
+    }
+
+    function endRound() {
+      if (!roundActive) return;
+      roundActive = false;
+      roundEnded = true;
+      timeRemaining = 0;
+      clearBullets();
+      if (score > bestScore) {
+        bestScore = score;
+        try {
+          localStorage.setItem(SCORE_STORAGE_KEY, String(bestScore));
+        } catch (error) {
+          console.warn("Failed to store high score:", error);
         }
       }
+      updateScoreDisplay();
     }
 
     function handleTargetHit(target) {
       if (target.userData.hit) return;
       target.userData.hit = true;
-      target.userData.fade = 0;
-      targetsHit++;
-      updateScoreDisplay();
+      // 破片を生成
+      const pos = new THREE.Vector3();
+      target.getWorldPosition(pos);
+      createShatter(pos);
+      // ターゲットを即時削除
+      const idx = targets.indexOf(target);
+      if (idx !== -1) {
+        scene.remove(target);
+        targets.splice(idx, 1);
+      }
+      if (roundActive) {
+        score++;
+        spawnRandomTarget();
+        updateScoreDisplay();
+      }
+    }
+
+    function updateFragments(delta) {
+      for (let i = fragments.length - 1; i >= 0; i--) {
+        const f = fragments[i];
+        f.life -= delta;
+        // 移動 & 重力
+        f.mesh.position.addScaledVector(f.velocity, delta);
+        f.velocity.y -= 9.8 * delta * 0.6;
+        // 回転
+        f.mesh.rotation.x += f.angular.x * delta;
+        f.mesh.rotation.y += f.angular.y * delta;
+        f.mesh.rotation.z += f.angular.z * delta;
+        // フェード
+        const t = Math.max(0, f.life / 1.2);
+        if (f.mesh.material && 'opacity' in f.mesh.material) {
+          f.mesh.material.opacity = t;
+        }
+        if (f.life <= 0) {
+          scene.remove(f.mesh);
+          fragments.splice(i, 1);
+        }
+      }
     }
 
     function createBullet() {
@@ -476,7 +674,10 @@
     }
 
     function shoot() {
-      if (targetsHit >= TOTAL_TARGETS) return;
+      if (!roundActive) {
+        startRound();
+      }
+      if (!roundActive) return;
       createBullet();
       flashCrosshair();
     }
@@ -515,24 +716,35 @@
     }
 
     function updateTargets(delta) {
-      camera.getWorldPosition(cameraWorldPosition);
       for (let i = targets.length - 1; i >= 0; i--) {
         const target = targets[i];
-        if (!target.userData.hit) {
-          target.lookAt(cameraWorldPosition);
-          target.rotation.x = 0;
-          target.rotation.z = 0;
-          target.children.forEach((child, index) => {
-            if (index === 0) child.rotation.z += delta;
-            if (index === 1) child.rotation.z -= delta * 1.4;
-            if (index === 2) {
-              child.rotation.x += delta * 1.6;
-              child.rotation.y += delta * 1.1;
+        const data = target.userData || {};
+        if (!data.hit) {
+          // 自転
+          if (data.spinAxis && typeof data.spinSpeed === "number") {
+            const angle = data.spinSpeed * delta;
+            target.rotateOnAxis(data.spinAxis, angle);
+          }
+
+          if (data.velocity instanceof THREE.Vector3) {
+            target.position.addScaledVector(data.velocity, delta);
+          }
+
+          if (typeof data.life === "number" && typeof data.maxLife === "number" && data.maxLife > 0) {
+            data.life += delta;
+            const lifeRatio = THREE.MathUtils.clamp(data.life / data.maxLife, 0, 1);
+            const scale = Math.max(0, 1 - lifeRatio);
+            target.scale.setScalar(scale);
+            if (scale <= 0.05 || target.position.y <= 0.6) {
+              scene.remove(target);
+              targets.splice(i, 1);
+              spawnRandomTarget();
+              continue;
             }
-          });
+          }
         } else {
-          target.userData.fade += delta;
-          const scale = Math.max(0, 1 - target.userData.fade * 3);
+          data.fade += delta;
+          const scale = Math.max(0, 1 - data.fade * 3);
           target.scale.setScalar(scale);
           if (scale <= 0.05) {
             scene.remove(target);
@@ -602,9 +814,20 @@
     const rightVector = new THREE.Vector3();
     const displacement = new THREE.Vector3();
 
-    let targetsHit = 0;
+    try {
+      const storedBest = localStorage.getItem(SCORE_STORAGE_KEY);
+      if (storedBest !== null) {
+        const parsedBest = Number.parseInt(storedBest, 10);
+        if (!Number.isNaN(parsedBest) && parsedBest > 0) {
+          bestScore = parsedBest;
+        }
+      }
+    } catch (error) {
+      console.warn("Failed to read high score:", error);
+    }
+
+    fillTargets();
     updateScoreDisplay();
-    createTargets();
 
     function updateMovement(delta) {
       const joystickX = Math.abs(moveJoystickData.x) > 0.01 ? moveJoystickData.x : 0;
@@ -648,9 +871,18 @@
       if (gyroActive && gyroControls && isGyroAvailable) {
         gyroControls.update();
       }
+      if (roundActive) {
+        timeRemaining = Math.max(0, timeRemaining - delta);
+        if (timeRemaining <= 0) {
+          endRound();
+        } else {
+          updateScoreDisplay();
+        }
+      }
       updateMovement(delta);
       updateBullets(delta);
       updateTargets(delta);
+      updateFragments(delta);
       renderer.render(scene, camera);
     });
   </script>
