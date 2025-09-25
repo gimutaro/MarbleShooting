@@ -78,6 +78,15 @@
     const ROUND_DURATION = 60;
     const MAX_ACTIVE_TARGETS = 20;
     const SCORE_STORAGE_KEY = "meteorHighScore";
+    const SPAWN_DELAY_MIN = 0.45;
+    const SPAWN_DELAY_MAX = 1.3;
+    const INITIAL_SPAWN_MIN = 3;
+    const INITIAL_SPAWN_MAX = 6;
+    const SPAWN_RADIUS_MIN = 28;
+    const SPAWN_RADIUS_MAX = 52;
+    const SPAWN_HEIGHT_MIN = 3;
+    const SPAWN_HEIGHT_MAX = 9;
+    const FIELD_CENTER = new THREE.Vector3(0, 3.5, -50);
 
     const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
     renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -130,10 +139,20 @@
     let roundActive = false;
     let roundEnded = false;
     let timeRemaining = ROUND_DURATION;
+    let spawnAccumulator = 0;
+    let nextSpawnDelay = 0;
 
     // 隕石ターゲット用マテリアル（通常のシェーディング）
     const meteorMaterial = new THREE.MeshStandardMaterial({ color: 0x8d8a84, roughness: 0.95, metalness: 0.08 });
     const meteorAccentMaterial = new THREE.MeshStandardMaterial({ color: 0x6e6b66, roughness: 0.98, metalness: 0.05 });
+    const meteorGlowGeometry = new THREE.SphereGeometry(2.4, 16, 16);
+    const meteorGlowMaterial = new THREE.MeshBasicMaterial({
+      color: 0xffa45c,
+      transparent: true,
+      opacity: 0.28,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false
+    });
     const bulletGeometry = new THREE.SphereGeometry(0.15, 12, 12);
     const bulletMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff });
 
@@ -448,6 +467,9 @@
       const group = new THREE.Group();
       const meteor = createMeteorMesh(1.8);
       group.add(meteor);
+      const glow = new THREE.Mesh(meteorGlowGeometry, meteorGlowMaterial.clone());
+      glow.scale.setScalar(0.9);
+      group.add(glow);
       group.position.set(x, y, z);
       // 隕石は自転させる
       const spinAxis = new THREE.Vector3(Math.random(), Math.random(), Math.random()).normalize();
@@ -500,25 +522,48 @@
     }
 
     function spawnRandomTarget() {
-      const minX = -24;
-      const maxX = 24;
-      const minZ = -72;
-      const maxZ = -28;
-      const minY = 6.5;
-      const maxY = 11.0;
+      if (!roundActive || targets.length >= MAX_ACTIVE_TARGETS) {
+        return;
+      }
+
       const minSeparation = 5;
       const maxAttemptsPerTarget = 300;
       const candidate = new THREE.Vector3();
+      const velocityDir = new THREE.Vector3();
 
       let placed = false;
       let attempts = 0;
 
-      while (!placed && attempts < maxAttemptsPerTarget) {
-        candidate.set(
-          THREE.MathUtils.randFloat(minX, maxX),
-          THREE.MathUtils.randFloat(minY, maxY),
-          THREE.MathUtils.randFloat(minZ, maxZ)
+      const computeVelocity = () => {
+        let baseAngle = Math.atan2(
+          candidate.z - FIELD_CENTER.z,
+          candidate.x - FIELD_CENTER.x
         );
+        if (!Number.isFinite(baseAngle)) {
+          baseAngle = THREE.MathUtils.randFloat(0, Math.PI * 2);
+        }
+        const sidewaysOffset = THREE.MathUtils.randFloatSpread(Math.PI * 0.6);
+        const sidewaysAngle = baseAngle + Math.PI / 2 + sidewaysOffset;
+        velocityDir.set(Math.cos(sidewaysAngle), 0, Math.sin(sidewaysAngle));
+        const speed = THREE.MathUtils.randFloat(0.8, 1.8);
+        velocityDir.multiplyScalar(speed);
+        velocityDir.y = -THREE.MathUtils.randFloat(0.35, 0.75);
+        return velocityDir;
+      };
+
+      const pickCandidatePosition = () => {
+        const angle = THREE.MathUtils.randFloat(0, Math.PI * 2);
+        const radius = THREE.MathUtils.randFloat(SPAWN_RADIUS_MIN, SPAWN_RADIUS_MAX);
+        const height = THREE.MathUtils.randFloat(SPAWN_HEIGHT_MIN, SPAWN_HEIGHT_MAX);
+        candidate.set(
+          camera.position.x + Math.cos(angle) * radius,
+          camera.position.y + height,
+          camera.position.z + Math.sin(angle) * radius
+        );
+      };
+
+      while (!placed && attempts < maxAttemptsPerTarget) {
+        pickCandidatePosition();
 
         let tooClose = false;
         for (let j = 0; j < targets.length; j++) {
@@ -529,11 +574,8 @@
         }
 
         if (!tooClose) {
-          const lateralX = THREE.MathUtils.randFloatSpread(0.6);
-          const downward = THREE.MathUtils.randFloat(0.25, 0.45);
-          const forward = THREE.MathUtils.randFloat(0.6, 1.4);
-          const meteorVelocity = new THREE.Vector3(lateralX, -downward, forward);
           const maxLife = THREE.MathUtils.randFloat(8, 13);
+          const meteorVelocity = computeVelocity();
           createTarget(candidate.x, candidate.y, candidate.z, { velocity: meteorVelocity, maxLife });
           placed = true;
         }
@@ -542,24 +584,10 @@
       }
 
       if (!placed) {
-        const fallbackVelocity = new THREE.Vector3(
-          THREE.MathUtils.randFloatSpread(0.6),
-          -THREE.MathUtils.randFloat(0.25, 0.45),
-          THREE.MathUtils.randFloat(0.6, 1.4)
-        );
+        pickCandidatePosition();
         const maxLife = THREE.MathUtils.randFloat(8, 13);
-        createTarget(
-          THREE.MathUtils.randFloat(minX, maxX),
-          THREE.MathUtils.randFloat(minY, maxY),
-          THREE.MathUtils.randFloat(minZ, maxZ),
-          { velocity: fallbackVelocity, maxLife }
-        );
-      }
-    }
-
-    function fillTargets() {
-      while (targets.length < MAX_ACTIVE_TARGETS) {
-        spawnRandomTarget();
+        const fallbackVelocity = computeVelocity();
+        createTarget(candidate.x, candidate.y, candidate.z, { velocity: fallbackVelocity, maxLife });
       }
     }
 
@@ -584,6 +612,36 @@
       fragments.length = 0;
     }
 
+    function scheduleNextSpawn() {
+      nextSpawnDelay = THREE.MathUtils.randFloat(SPAWN_DELAY_MIN, SPAWN_DELAY_MAX);
+      spawnAccumulator = 0;
+    }
+
+    function spawnInitialWave() {
+      if (!roundActive) return;
+      const minCount = Math.min(MAX_ACTIVE_TARGETS, INITIAL_SPAWN_MIN);
+      const maxCount = Math.min(MAX_ACTIVE_TARGETS, INITIAL_SPAWN_MAX);
+      const spawnCount = Math.floor(THREE.MathUtils.randFloat(minCount, maxCount + 1));
+      for (let i = 0; i < spawnCount && targets.length < MAX_ACTIVE_TARGETS; i++) {
+        spawnRandomTarget();
+      }
+      scheduleNextSpawn();
+    }
+
+    function updateSpawning(delta) {
+      if (!roundActive) return;
+      if (targets.length >= MAX_ACTIVE_TARGETS) return;
+      if (nextSpawnDelay <= 0) {
+        scheduleNextSpawn();
+        return;
+      }
+      spawnAccumulator += delta;
+      if (spawnAccumulator >= nextSpawnDelay) {
+        spawnRandomTarget();
+        scheduleNextSpawn();
+      }
+    }
+
     function startRound() {
       if (roundActive) return;
       const shouldResetTargets = roundEnded || targets.length === 0;
@@ -591,12 +649,14 @@
       roundEnded = false;
       timeRemaining = ROUND_DURATION;
       score = 0;
+      spawnAccumulator = 0;
+      nextSpawnDelay = 0;
       clearBullets();
       clearFragments();
       if (shouldResetTargets) {
         clearTargets();
       }
-      fillTargets();
+      spawnInitialWave();
       updateScoreDisplay();
     }
 
@@ -606,6 +666,10 @@
       roundEnded = true;
       timeRemaining = 0;
       clearBullets();
+      clearFragments();
+      clearTargets();
+      spawnAccumulator = 0;
+      nextSpawnDelay = 0;
       if (score > bestScore) {
         bestScore = score;
         try {
@@ -738,7 +802,9 @@
             if (scale <= 0.05 || target.position.y <= 0.6) {
               scene.remove(target);
               targets.splice(i, 1);
-              spawnRandomTarget();
+              if (roundActive) {
+                spawnRandomTarget();
+              }
               continue;
             }
           }
@@ -749,6 +815,9 @@
           if (scale <= 0.05) {
             scene.remove(target);
             targets.splice(i, 1);
+            if (roundActive) {
+              spawnRandomTarget();
+            }
           }
         }
       }
@@ -826,7 +895,6 @@
       console.warn("Failed to read high score:", error);
     }
 
-    fillTargets();
     updateScoreDisplay();
 
     function updateMovement(delta) {
@@ -880,6 +948,7 @@
         }
       }
       updateMovement(delta);
+      updateSpawning(delta);
       updateBullets(delta);
       updateTargets(delta);
       updateFragments(delta);
