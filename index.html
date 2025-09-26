@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="ja">
 <head>
   <meta charset="UTF-8" />
@@ -12,7 +12,8 @@
     #gyroPermission > div { max-width: 320px; }
     #gyroPermission button { margin-top: 20px; padding: 10px 28px; border: 1px solid rgba(255, 255, 255, 0.7); background: transparent; color: #fff; font-size: 0.82rem; letter-spacing: 0.12em; cursor: pointer; }
     #gyroPermission button:active { background: rgba(255, 255, 255, 0.1); }
-    #scoreDisplay { position: fixed; top: 24px; left: 24px; color: #fff; font-family: system-ui, sans-serif; letter-spacing: 0.08em; font-size: 0.9rem; text-transform: uppercase; z-index: 8; pointer-events: none; }
+    #scoreDisplay { position: fixed; top: 24px; left: 24px; color: #fff; font-family: system-ui, sans-serif; letter-spacing: 0.08em; font-size: 0.9rem; text-transform: uppercase; z-index: 8; pointer-events: none; transition: color 0.15s ease, text-shadow 0.15s ease; }
+    #scoreDisplay.damage { color: #ff6f91; text-shadow: 0 0 12px rgba(255, 127, 159, 0.8); }
     #crosshair { position: fixed; top: 50%; left: 50%; width: 28px; height: 28px; transform: translate(-50%, -50%); pointer-events: none; z-index: 8; opacity: 0.7; }
     #crosshair::before, #crosshair::after { content: ''; position: absolute; background: rgba(255, 255, 255, 0.7); }
     #crosshair::before { width: 100%; height: 1px; top: 50%; left: 0; transform: translateY(-50%); }
@@ -56,7 +57,7 @@
       <button id="requestGyro">Enable Gyro</button>
     </div>
   </div>
-  <div id="scoreDisplay">Targets: 0 / 20</div>
+  <div id="scoreDisplay">Shoot to engage | Player HP: 5 / 5 | Boss HP: 12 / 12</div>
   <div id="crosshair"><div class="circle"></div></div>
   <div id="shootButton">
     <div class="shoot-crosshair"></div>
@@ -68,1083 +69,1087 @@
     </div>
   </div>
   <script type="module">
-    import * as THREE from "three";
-    import { SparkRenderer, SplatMesh } from "@sparkjsdev/spark";
+import * as THREE from "three";
+import { SparkRenderer, SplatMesh } from "@sparkjsdev/spark";
 
-    const SPZ_URL = "https://space-gimu.s3.ap-northeast-1.amazonaws.com/space.spz";
-    const MOVE_SPEED = 2.5;
-    const POINTER_SENSITIVITY = 0.002;
-    const PITCH_LIMIT = Math.PI / 2 - 0.01;
-    const BULLET_SPEED = 40;
-    const BULLET_LIFETIME = 1.5;
-    const TRIPLE_SHOT_DURATION = 12;
-    const TRIPLE_SHOT_SPREAD_ANGLE = THREE.MathUtils.degToRad(4.5);
-    const TRIPLE_SHOT_LATERAL_OFFSET = 0.18;
-    const POWERUP_SPAWN_DELAY_MIN = 15;
-    const POWERUP_SPAWN_DELAY_MAX = 25;
-    const POWERUP_LIFETIME = 18;
-    const POWERUP_PICKUP_RADIUS = 1.1;
-    const POWERUP_MAX_ACTIVE = 1;
-    const ROUND_DURATION = 60;
-    const MAX_ACTIVE_TARGETS = 20;
-    const SCORE_STORAGE_KEY = "meteorHighScore";
-    const SPAWN_DELAY_MIN = 0.45;
-    const SPAWN_DELAY_MAX = 1.3;
-    const INITIAL_SPAWN_MIN = 3;
-    const INITIAL_SPAWN_MAX = 6;
-    const SPAWN_RADIUS_MIN = 28;
-    const SPAWN_RADIUS_MAX = 52;
-    const SPAWN_HEIGHT_MIN = 3;
-    const SPAWN_HEIGHT_MAX = 9;
-    const FIELD_CENTER = new THREE.Vector3(0, 3.5, -50);
+const SPZ_URL = "https://space-gimu.s3.ap-northeast-1.amazonaws.com/space.spz";
+const MOVE_SPEED = 2.5;
+const POINTER_SENSITIVITY = 0.002;
+const PITCH_LIMIT = Math.PI / 2 - 0.01;
+const BULLET_SPEED = 40;
+const BULLET_LIFETIME = 1.6;
+const SHOOT_COOLDOWN = 0.18;
+const PLAYER_MAX_HEALTH = 5;
+const PLAYER_HIT_RADIUS = 1.3;
+const BOSS_MAX_HEALTH = 12;
+const BOSS_WEAK_POINT_RADIUS = 1.8;
+const BOSS_ATTACK_COOLDOWN_MIN = 1.2;
+const BOSS_ATTACK_COOLDOWN_MAX = 2.4;
+const BOSS_MOVE_INTERVAL = 2.8;
+const BOSS_MOVE_RADIUS_X = 32;
+const BOSS_MOVE_MIN_Z = -40;
+const BOSS_MOVE_MAX_Z = -18;
 
-    const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
-    renderer.outputColorSpace = THREE.SRGBColorSpace;
-    renderer.domElement.style.cursor = "grab";
-    document.body.appendChild(renderer.domElement);
+const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.domElement.style.cursor = "grab";
+document.body.appendChild(renderer.domElement);
 
-    const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.1, 1000);
-    camera.rotation.order = "YXZ";
-    camera.position.set(0, 1.6, 3.5);
-    const initialLookTarget = new THREE.Vector3(0, 1.6, -20);
-    camera.lookAt(initialLookTarget);
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(0x040212, 18, 160);
 
-    // 隕石の陰影表示用ライト
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.45);
-    scene.add(ambientLight);
-    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.9);
-    directionalLight.position.set(3, 5, 2);
-    scene.add(directionalLight);
+const camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.1, 1000);
+camera.rotation.order = "YXZ";
+camera.position.set(0, 1.6, 3.5);
+camera.lookAt(new THREE.Vector3(0, 1.6, -24));
 
-    const cameraEuler = new THREE.Euler(0, 0, 0, "YXZ");
-    cameraEuler.setFromQuaternion(camera.quaternion);
-    let pitch = cameraEuler.x;
-    let yaw = cameraEuler.y;
+scene.add(new THREE.AmbientLight(0x88aaff, 0.45));
+const rimLight = new THREE.DirectionalLight(0xcbd5ff, 0.7);
+rimLight.position.set(-6, 8, 12);
+scene.add(rimLight);
+const fillLight = new THREE.PointLight(0x2233ff, 1.6, 120);
+fillLight.position.set(0, 12, -24);
+scene.add(fillLight);
 
-    const isMobile = /Android|iPhone|iPad|iPod|Mobi/i.test(navigator.userAgent);
-    const gyroPermissionEl = document.getElementById("gyroPermission");
-    const requestGyroButton = document.getElementById("requestGyro");
-    const mobileUI = document.getElementById("mobileUI");
-    const moveJoystick = document.getElementById("moveJoystick");
-    const moveStick = document.getElementById("moveStick");
-    const shootButton = document.getElementById("shootButton");
-    const scoreDisplay = document.getElementById("scoreDisplay");
-    const crosshair = document.getElementById("crosshair");
+const cameraEuler = new THREE.Euler(0, 0, 0, "YXZ");
+cameraEuler.setFromQuaternion(camera.quaternion);
+let pitch = cameraEuler.x;
+let yaw = cameraEuler.y;
 
-    let gyroControls = null;
-    let gyroActive = false;
-    let isGyroAvailable = false;
-    let pointerLocked = false;
-    let moveJoystickData = { x: 0, y: 0 };
-    let touchLookActive = false;
-    let lastTouchX = 0;
-    let lastTouchY = 0;
+const isMobile = /Android|iPhone|iPad|iPod|Mobi/i.test(navigator.userAgent);
+const gyroPermissionEl = document.getElementById("gyroPermission");
+const requestGyroButton = document.getElementById("requestGyro");
+const mobileUI = document.getElementById("mobileUI");
+const moveJoystick = document.getElementById("moveJoystick");
+const moveStick = document.getElementById("moveStick");
+const shootButton = document.getElementById("shootButton");
+const scoreDisplay = document.getElementById("scoreDisplay");
+const crosshair = document.getElementById("crosshair");
 
-    const powerUps = [];
-    const targets = [];
-    const bullets = [];
-    const fragments = [];
-    let score = 0;
-    let bestScore = 0;
-    let roundActive = false;
-    let roundEnded = false;
-    let timeRemaining = ROUND_DURATION;
-    let spawnAccumulator = 0;
-    let nextSpawnDelay = 0;
-    let powerUpSpawnAccumulator = 0;
-    let nextPowerUpDelay = 0;
-    let tripleShotActive = false;
-    let tripleShotTimer = 0;
+let gyroControls = null;
+let gyroActive = false;
+let isGyroAvailable = false;
+let pointerLocked = false;
+let moveJoystickData = { x: 0, y: 0 };
+let touchLookActive = false;
+let lastTouchX = 0;
+let lastTouchY = 0;
 
-    // 隕石ターゲット用マテリアル（通常のシェーディング）
-    const meteorMaterial = new THREE.MeshStandardMaterial({ color: 0x8d8a84, roughness: 0.95, metalness: 0.08 });
-    const meteorAccentMaterial = new THREE.MeshStandardMaterial({ color: 0x6e6b66, roughness: 0.98, metalness: 0.05 });
-    const meteorGlowGeometry = new THREE.SphereGeometry(2.4, 16, 16);
-    const meteorGlowMaterial = new THREE.MeshBasicMaterial({
-      color: 0xffa45c,
+const bullets = [];
+const bossAttacks = [];
+const bossDeathPieces = [];
+let playerHealth = PLAYER_MAX_HEALTH;
+let bossHealth = BOSS_MAX_HEALTH;
+let shootCooldownTimer = 0;
+let attackCooldownTimer = THREE.MathUtils.randFloat(BOSS_ATTACK_COOLDOWN_MIN, BOSS_ATTACK_COOLDOWN_MAX);
+let bossMoveTimer = 0;
+let bossTime = 0;
+let bossHitReaction = 0;
+let bossAttackPattern = 0;
+let gameStarted = false;
+let gameActive = false;
+let victoryAchieved = false;
+let defeat = false;
+let isBossDying = false;
+
+let boss = null;
+let bossCore = null;
+let bossWeakPoint = null;
+let bossFloatingCrystals = [];
+let bossEnergyRings = [];
+let bossShoulders = [];
+const bossTargetPosition = new THREE.Vector3(0, 6.5, -32);
+
+const clock = new THREE.Clock();
+const worldUp = new THREE.Vector3(0, 1, 0);
+const inputVector = new THREE.Vector3();
+const forwardVector = new THREE.Vector3();
+const rightVector = new THREE.Vector3();
+const displacement = new THREE.Vector3();
+const bulletStartPosition = new THREE.Vector3();
+const bulletDirection = new THREE.Vector3();
+const tmpVecA = new THREE.Vector3();
+const tmpVecB = new THREE.Vector3();
+
+function updateHud() {
+  if (!scoreDisplay) return;
+  if (!gameStarted) {
+    scoreDisplay.textContent = "Shoot to engage | Player HP: " + playerHealth + "/" + PLAYER_MAX_HEALTH + " | Boss HP: " + bossHealth + "/" + BOSS_MAX_HEALTH;
+  } else if (victoryAchieved) {
+    scoreDisplay.textContent = "Victory! Core shattered. Shoot to restart";
+  } else if (defeat) {
+    scoreDisplay.textContent = "Defeat... Shoot to retry";
+  } else {
+    scoreDisplay.textContent = "Player HP: " + playerHealth + "/" + PLAYER_MAX_HEALTH + "  Boss HP: " + bossHealth + "/" + BOSS_MAX_HEALTH;
+  }
+}
+
+function setScoreDamageFlash() {
+  if (!scoreDisplay) return;
+  scoreDisplay.classList.add("damage");
+  setTimeout(() => scoreDisplay.classList.remove("damage"), 160);
+}
+
+function createBoss() {
+  bossFloatingCrystals = [];
+  bossEnergyRings = [];
+  bossShoulders = [];
+  const group = new THREE.Group();
+
+  const outer = new THREE.Mesh(
+    new THREE.OctahedronGeometry(6.6, 0),
+    new THREE.MeshStandardMaterial({
+      color: 0x0099ff,
+      metalness: 0.35,
+      roughness: 0.25,
       transparent: true,
-      opacity: 0.28,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false
-    });
-    const bulletGeometry = new THREE.SphereGeometry(0.15, 12, 12);
-    const bulletMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff });
-    const powerUpGeometry = new THREE.OctahedronGeometry(0.4, 0);
-    const powerUpCoreMaterial = new THREE.MeshStandardMaterial({
-      color: 0x44d8ff,
-      emissive: 0x44d8ff,
+      opacity: 0.78,
+      emissive: 0x0048ff,
+      emissiveIntensity: 0.35
+    })
+  );
+  outer.scale.y = 1.6;
+  group.add(outer);
+
+  const inner = new THREE.Mesh(
+    new THREE.OctahedronGeometry(4.2, 0),
+    new THREE.MeshStandardMaterial({
+      color: 0x00d4ff,
+      metalness: 0.65,
+      roughness: 0.18,
+      emissive: 0x0099ff,
+      emissiveIntensity: 0.55
+    })
+  );
+  inner.scale.y = 1.35;
+  group.add(inner);
+
+  bossCore = new THREE.Mesh(
+    new THREE.IcosahedronGeometry(2.2, 1),
+    new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      emissive: 0x00ffff,
       emissiveIntensity: 1.6,
-      metalness: 0.2,
-      roughness: 0.3
-    });
-    const powerUpGlowGeometry = new THREE.SphereGeometry(0.68, 18, 18);
-    const powerUpGlowMaterial = new THREE.MeshBasicMaterial({
-      color: 0x88e6ff,
-      transparent: true,
-      opacity: 0.5,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false
-    });
+      metalness: 0.85,
+      roughness: 0.05
+    })
+  );
+  group.add(bossCore);
 
-    const cameraWorldPosition = new THREE.Vector3();
-    const targetWorldPosition = new THREE.Vector3();
-    const bulletStartPosition = new THREE.Vector3();
-    const bulletBaseDirection = new THREE.Vector3();
-    const bulletTempDirection = new THREE.Vector3();
-    const bulletRightVector = new THREE.Vector3();
-    const powerUpCandidate = new THREE.Vector3();
+  for (let i = 0; i < 6; i++) {
+    const angle = (i / 6) * Math.PI * 2;
+    const crystal = new THREE.Mesh(
+      new THREE.TetrahedronGeometry(0.9, 0),
+      new THREE.MeshStandardMaterial({
+        color: 0x00c4ff,
+        emissive: 0x0099ff,
+        emissiveIntensity: 0.6,
+        metalness: 0.5,
+        roughness: 0.2
+      })
+    );
+    crystal.position.set(Math.cos(angle) * 4.2, Math.sin(angle * 1.5) * 2.4, Math.sin(angle) * 4.2);
+    bossFloatingCrystals.push(crystal);
+    group.add(crystal);
+  }
 
-    function applyCameraRotation() {
-      cameraEuler.set(pitch, yaw, 0);
-      camera.quaternion.setFromEuler(cameraEuler);
+  const ringColors = [0x00ffff, 0x00aaff, 0xff44aa];
+  for (let i = 0; i < 3; i++) {
+    const ring = new THREE.Mesh(
+      new THREE.TorusGeometry(7.2 + i * 1.5, 0.3, 12, 48),
+      new THREE.MeshStandardMaterial({
+        color: ringColors[i],
+        emissive: ringColors[i],
+        emissiveIntensity: 0.6,
+        transparent: true,
+        opacity: 0.55
+      })
+    );
+    ring.rotation.x = Math.PI / 2;
+    ring.position.y = (i - 1) * 2.4;
+    bossEnergyRings.push(ring);
+    group.add(ring);
+  }
+
+  for (const side of [-1, 1]) {
+    const shoulderGroup = new THREE.Group();
+    shoulderGroup.position.set(side * 6.4, 1.6, -0.5);
+    const shoulder = new THREE.Mesh(
+      new THREE.OctahedronGeometry(2.6, 0),
+      new THREE.MeshStandardMaterial({
+        color: 0x00ccff,
+        emissive: 0x0077ff,
+        emissiveIntensity: 0.5,
+        metalness: 0.6,
+        roughness: 0.3
+      })
+    );
+    shoulder.rotation.z = side * Math.PI / 6;
+    shoulderGroup.add(shoulder);
+    const cannonCore = new THREE.Mesh(
+      new THREE.SphereGeometry(1.1, 16, 16),
+      new THREE.MeshStandardMaterial({
+        color: 0xff00aa,
+        emissive: 0xff00aa,
+        emissiveIntensity: 1.1,
+        metalness: 0.4,
+        roughness: 0.25
+      })
+    );
+    cannonCore.position.set(side * 1.6, 0.2, 2.4);
+    shoulderGroup.add(cannonCore);
+    bossShoulders.push({ group: shoulderGroup, cannon: cannonCore, swingOffset: Math.random() * Math.PI * 2 });
+    group.add(shoulderGroup);
+  }
+
+  bossWeakPoint = new THREE.Mesh(
+    new THREE.SphereGeometry(1.6, 24, 24),
+    new THREE.MeshStandardMaterial({
+      color: 0xff2244,
+      emissive: 0xff2244,
+      emissiveIntensity: 1.6,
+      metalness: 0.4,
+      roughness: 0.32
+    })
+  );
+  bossWeakPoint.position.set(0, 1.1, 4.2);
+  group.add(bossWeakPoint);
+  const weakPointLight = new THREE.PointLight(0xff3366, 22, 36);
+  weakPointLight.position.set(0, 1.1, 4.2);
+  group.add(weakPointLight);
+
+  const halo = new THREE.Mesh(
+    new THREE.TorusGeometry(5.6, 0.14, 8, 64),
+    new THREE.MeshBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.38 })
+  );
+  halo.rotation.x = Math.PI / 2;
+  halo.position.y = 3.5;
+  group.add(halo);
+
+  group.position.copy(bossTargetPosition);
+  return group;
+}
+function initializeBoss() {
+  if (boss) {
+    scene.remove(boss);
+  }
+  boss = createBoss();
+  scene.add(boss);
+}
+
+function registerBossAttack(mesh, velocity, options) {
+  options = options || {};
+  mesh.position.addScaledVector(velocity.clone().normalize(), 0.2);
+  scene.add(mesh);
+  bossAttacks.push({
+    mesh,
+    velocity,
+    life: options.life === undefined ? 4 : options.life,
+    spin: options.spin || new THREE.Vector3(),
+    damage: options.damage === undefined ? 1 : options.damage,
+    homing: options.homing || false
+  });
+}
+
+function clearBossAttacks() {
+  for (let i = bossAttacks.length - 1; i >= 0; i--) {
+    scene.remove(bossAttacks[i].mesh);
+  }
+  bossAttacks.length = 0;
+}
+
+function clearBossDeathPieces() {
+  for (let i = bossDeathPieces.length - 1; i >= 0; i--) {
+    scene.remove(bossDeathPieces[i].mesh);
+  }
+  bossDeathPieces.length = 0;
+  isBossDying = false;
+}
+
+function flashBoss() {
+  if (!boss) return;
+  const flashColor = new THREE.Color(0xff6666);
+  const flashEmissive = new THREE.Color(0xff3333);
+  boss.traverse((child) => {
+    if (child.isMesh && child !== bossWeakPoint) {
+      const material = child.material;
+      if (!material.userData) material.userData = {};
+      if (!material.userData.originalColor) {
+        material.userData.originalColor = material.color.clone();
+      }
+      if (material.emissive && !material.userData.originalEmissive) {
+        material.userData.originalEmissive = material.emissive.clone();
+      }
+      material.color.lerp(flashColor, 0.5);
+      if (material.emissive) {
+        material.emissive.lerp(flashEmissive, 0.7);
+      }
+      setTimeout(() => {
+        if (!material.userData) return;
+        if (material.userData.originalColor) {
+          material.color.copy(material.userData.originalColor);
+        }
+        if (material.emissive && material.userData.originalEmissive) {
+          material.emissive.copy(material.userData.originalEmissive);
+        }
+      }, 160);
     }
+  });
+}
 
-    function flashCrosshair() {
-      if (!crosshair) return;
-      crosshair.classList.remove("flash");
-      // Force reflow to restart animation
-      void crosshair.offsetWidth;
-      crosshair.classList.add("flash");
+function startBossDeathSequence() {
+  if (!boss) return;
+  victoryAchieved = true;
+  gameActive = false;
+  gameStarted = false;
+  isBossDying = true;
+
+  const origin = new THREE.Vector3();
+  boss.getWorldPosition(origin);
+  scene.remove(boss);
+  boss = null;
+  bossWeakPoint = null;
+  bossCore = null;
+
+  for (let i = 0; i < 36; i++) {
+    const shard = new THREE.Mesh(
+      new THREE.TetrahedronGeometry(THREE.MathUtils.randFloat(0.3, 0.8), 0),
+      new THREE.MeshStandardMaterial({
+        color: 0x7cd3ff,
+        emissive: 0x4fe0ff,
+        emissiveIntensity: 0.9,
+        transparent: true,
+        opacity: 1
+      })
+    );
+    shard.position.copy(origin);
+    shard.position.x += THREE.MathUtils.randFloatSpread(1.5);
+    shard.position.y += THREE.MathUtils.randFloatSpread(1.5);
+    shard.position.z += THREE.MathUtils.randFloatSpread(1.5);
+    scene.add(shard);
+    bossDeathPieces.push({
+      mesh: shard,
+      velocity: new THREE.Vector3(
+        THREE.MathUtils.randFloatSpread(14),
+        THREE.MathUtils.randFloat(3, 16),
+        THREE.MathUtils.randFloatSpread(14)
+      ),
+      angular: new THREE.Vector3(
+        THREE.MathUtils.randFloat(-8, 8),
+        THREE.MathUtils.randFloat(-8, 8),
+        THREE.MathUtils.randFloat(-8, 8)
+      ),
+      life: 2.2
+    });
+  }
+
+  const flash = new THREE.PointLight(0x88ccff, 90, 80);
+  flash.position.copy(origin);
+  scene.add(flash);
+  setTimeout(() => scene.remove(flash), 400);
+  updateHud();
+}
+
+function startBattle() {
+  clearBossAttacks();
+  clearBossDeathPieces();
+  playerHealth = PLAYER_MAX_HEALTH;
+  bossHealth = BOSS_MAX_HEALTH;
+  shootCooldownTimer = 0;
+  attackCooldownTimer = THREE.MathUtils.randFloat(BOSS_ATTACK_COOLDOWN_MIN, BOSS_ATTACK_COOLDOWN_MAX);
+  bossMoveTimer = 0;
+  bossTime = 0;
+  bossHitReaction = 0;
+  bossAttackPattern = 0;
+  victoryAchieved = false;
+  defeat = false;
+  gameStarted = true;
+  gameActive = true;
+
+  if (!boss) {
+    initializeBoss();
+  }
+  if (boss) {
+    boss.position.copy(bossTargetPosition);
+    boss.rotation.set(0, 0, 0);
+    boss.scale.set(1, 1, 1);
+  }
+
+  updateHud();
+}
+
+function applyPlayerDamage(amount) {
+  if (victoryAchieved || defeat) return;
+  playerHealth = Math.max(0, playerHealth - (amount || 1));
+  setScoreDamageFlash();
+  if (playerHealth <= 0) {
+    defeat = true;
+    gameActive = false;
+    gameStarted = false;
+    clearBossAttacks();
+  }
+  updateHud();
+}
+
+function handleBossHit(worldPosition) {
+  if (!gameActive || victoryAchieved || !bossWeakPoint) return;
+  bossHealth = Math.max(0, bossHealth - 1);
+  bossHitReaction = 1;
+  bossMoveTimer = 0;
+  bossTargetPosition.x = THREE.MathUtils.randFloat(-BOSS_MOVE_RADIUS_X, BOSS_MOVE_RADIUS_X);
+  bossTargetPosition.z = THREE.MathUtils.randFloat(BOSS_MOVE_MIN_Z, BOSS_MOVE_MAX_Z);
+
+  const flash = new THREE.PointLight(0xffff80, 26, 40);
+  flash.position.copy(worldPosition);
+  scene.add(flash);
+  setTimeout(() => scene.remove(flash), 200);
+
+  flashBoss();
+  updateHud();
+
+  if (bossHealth <= 0) {
+    startBossDeathSequence();
+  }
+}
+
+function createBullet() {
+  const bullet = new THREE.Mesh(
+    new THREE.SphereGeometry(0.15, 12, 12),
+    new THREE.MeshBasicMaterial({ color: 0xffffff })
+  );
+  camera.getWorldPosition(bulletStartPosition);
+  camera.getWorldDirection(bulletDirection);
+  bulletDirection.normalize();
+  bullet.position.copy(bulletStartPosition).addScaledVector(bulletDirection, 0.6);
+  scene.add(bullet);
+  bullets.push({ mesh: bullet, velocity: bulletDirection.clone().multiplyScalar(BULLET_SPEED), life: BULLET_LIFETIME });
+}
+
+function shoot() {
+  if (!gameStarted) {
+    startBattle();
+  }
+  if (!gameActive || shootCooldownTimer > 0) {
+    return;
+  }
+  shootCooldownTimer = SHOOT_COOLDOWN;
+  createBullet();
+  if (crosshair) {
+    crosshair.classList.remove("flash");
+    void crosshair.offsetWidth;
+    crosshair.classList.add("flash");
+  }
+}
+function updateBullets(delta) {
+  if (bullets.length === 0) return;
+  const weakPointPosition = new THREE.Vector3();
+  for (let i = bullets.length - 1; i >= 0; i--) {
+    const bulletData = bullets[i];
+    bulletData.life -= delta;
+    bulletData.mesh.position.addScaledVector(bulletData.velocity, delta);
+    if (bulletData.life <= 0) {
+      scene.remove(bulletData.mesh);
+      bullets.splice(i, 1);
+      continue;
     }
-
-    function updateScoreDisplay() {
-      if (!scoreDisplay) return;
-      if (roundActive) {
-        const timeText = Math.max(0, timeRemaining).toFixed(1);
-        scoreDisplay.textContent = `Score: ${score}  Best: ${bestScore}  Time: ${timeText}s`;
-      } else if (roundEnded) {
-        scoreDisplay.textContent = `Time Up! Score: ${score}  Best: ${bestScore}  Shoot to restart`;
-      } else {
-        scoreDisplay.textContent = `Shoot to start  Best: ${bestScore}`;
+    if (bossWeakPoint && gameActive && !victoryAchieved) {
+      bossWeakPoint.getWorldPosition(weakPointPosition);
+      if (bulletData.mesh.position.distanceTo(weakPointPosition) <= BOSS_WEAK_POINT_RADIUS) {
+        handleBossHit(weakPointPosition.clone());
+        scene.remove(bulletData.mesh);
+        bullets.splice(i, 1);
       }
     }
+  }
+}
 
-    function createGyroControls() {
-      const deviceOrientation = { alpha: null, beta: null, gamma: null };
-      let screenOrientation = window.orientation || 0;
-      const zee = new THREE.Vector3(0, 0, 1);
-      const euler = new THREE.Euler();
-      const q0 = new THREE.Quaternion();
-      const q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5));
+function updateBossAttacks(delta) {
+  for (let i = bossAttacks.length - 1; i >= 0; i--) {
+    const attack = bossAttacks[i];
+    attack.life -= delta;
+    if (attack.homing && gameActive) {
+      tmpVecA.copy(camera.position).sub(attack.mesh.position).normalize();
+      const speed = attack.velocity.length();
+      attack.velocity.lerp(tmpVecA.multiplyScalar(speed), delta * 0.9);
+    }
+    attack.mesh.position.addScaledVector(attack.velocity, delta);
+    attack.mesh.rotation.x += attack.spin.x * delta;
+    attack.mesh.rotation.y += attack.spin.y * delta;
+    attack.mesh.rotation.z += attack.spin.z * delta;
 
-      const onDeviceOrientationChangeEvent = (event) => {
-        deviceOrientation.alpha = event.alpha;
-        deviceOrientation.beta = event.beta;
-        deviceOrientation.gamma = event.gamma;
-      };
-
-      const onScreenOrientationChangeEvent = () => {
-        screenOrientation = window.orientation || 0;
-      };
-
-      return {
-        connect() {
-          onScreenOrientationChangeEvent();
-          window.addEventListener("orientationchange", onScreenOrientationChangeEvent);
-          window.addEventListener("deviceorientation", onDeviceOrientationChangeEvent);
-        },
-        disconnect() {
-          window.removeEventListener("orientationchange", onScreenOrientationChangeEvent);
-          window.removeEventListener("deviceorientation", onDeviceOrientationChangeEvent);
-        },
-        update() {
-          if (deviceOrientation.alpha === null && deviceOrientation.beta === null && deviceOrientation.gamma === null) {
-            return;
-          }
-
-          const alpha = deviceOrientation.alpha !== null ? THREE.MathUtils.degToRad(deviceOrientation.alpha) : 0;
-          const beta = deviceOrientation.beta !== null ? THREE.MathUtils.degToRad(deviceOrientation.beta) : 0;
-          const gamma = deviceOrientation.gamma !== null ? THREE.MathUtils.degToRad(deviceOrientation.gamma) : 0;
-          const orient = THREE.MathUtils.degToRad(screenOrientation);
-
-          euler.set(beta, alpha, -gamma, "YXZ");
-          camera.quaternion.setFromEuler(euler);
-          camera.quaternion.multiply(q1);
-          camera.quaternion.multiply(q0.setFromAxisAngle(zee, -orient));
-
-          cameraEuler.setFromQuaternion(camera.quaternion);
-          pitch = cameraEuler.x;
-          yaw = cameraEuler.y;
-        }
-      };
+    if (attack.life <= 0 || attack.mesh.position.distanceToSquared(camera.position) > 40000) {
+      scene.remove(attack.mesh);
+      bossAttacks.splice(i, 1);
+      continue;
     }
 
-    async function setupGyroscope() {
-      if (!isMobile || gyroActive || typeof DeviceOrientationEvent === "undefined") {
+    if (!victoryAchieved && !defeat) {
+      if (attack.mesh.position.distanceTo(camera.position) <= PLAYER_HIT_RADIUS) {
+        scene.remove(attack.mesh);
+        bossAttacks.splice(i, 1);
+        applyPlayerDamage(attack.damage);
+      }
+    }
+  }
+}
+
+function updateBossDeath(delta) {
+  if (!isBossDying) return;
+  for (let i = bossDeathPieces.length - 1; i >= 0; i--) {
+    const piece = bossDeathPieces[i];
+    piece.life -= delta;
+    piece.mesh.position.addScaledVector(piece.velocity, delta);
+    piece.velocity.y -= 9.8 * delta * 0.4;
+    piece.mesh.rotation.x += piece.angular.x * delta;
+    piece.mesh.rotation.y += piece.angular.y * delta;
+    piece.mesh.rotation.z += piece.angular.z * delta;
+    if (piece.mesh.material && "opacity" in piece.mesh.material) {
+      piece.mesh.material.opacity = Math.max(0, piece.life / 2.2);
+    }
+    if (piece.life <= 0) {
+      scene.remove(piece.mesh);
+      bossDeathPieces.splice(i, 1);
+    }
+  }
+  if (bossDeathPieces.length === 0) {
+    isBossDying = false;
+  }
+}
+
+function shootFocusedVolley() {
+  if (!boss) return;
+  const muzzle = new THREE.Vector3(boss.position.x, boss.position.y + 4.2, boss.position.z + 0.6);
+  tmpVecA.subVectors(camera.position, muzzle).normalize();
+  const spreads = [-6, 0, 6];
+  for (let i = 0; i < spreads.length; i++) {
+    const dir = tmpVecA.clone().applyAxisAngle(worldUp, THREE.MathUtils.degToRad(spreads[i]));
+    dir.y += THREE.MathUtils.randFloat(-0.05, 0.05);
+    dir.normalize();
+    const orb = new THREE.Mesh(
+      new THREE.SphereGeometry(0.95, 18, 18),
+      new THREE.MeshBasicMaterial({ color: 0xff44ff, transparent: true, opacity: 0.9 })
+    );
+    orb.position.copy(muzzle);
+    registerBossAttack(orb, dir.multiplyScalar(24), {
+      life: 4,
+      spin: new THREE.Vector3(
+        THREE.MathUtils.randFloat(-3, 3),
+        THREE.MathUtils.randFloat(-3, 3),
+        THREE.MathUtils.randFloat(-3, 3)
+      )
+    });
+  }
+  const burst = new THREE.PointLight(0xff66ff, 16, 28);
+  burst.position.copy(muzzle);
+  scene.add(burst);
+  setTimeout(() => scene.remove(burst), 220);
+}
+
+function shootCrystalSpread() {
+  if (!boss) return;
+  const origin = new THREE.Vector3(boss.position.x, boss.position.y + 4.8, boss.position.z);
+  for (let i = -2; i <= 2; i++) {
+    const shard = new THREE.Mesh(
+      new THREE.OctahedronGeometry(0.7, 0),
+      new THREE.MeshBasicMaterial({ color: 0xffaa44, transparent: true, opacity: 0.85 })
+    );
+    shard.position.copy(origin);
+    tmpVecA.subVectors(camera.position, origin).normalize();
+    tmpVecA.applyAxisAngle(worldUp, THREE.MathUtils.degToRad(i * 4.5));
+    tmpVecA.y += THREE.MathUtils.randFloat(-0.08, 0.08);
+    tmpVecA.normalize();
+    registerBossAttack(shard, tmpVecA.multiplyScalar(20 + Math.abs(i) * 2), {
+      life: 3.6,
+      spin: new THREE.Vector3(
+        THREE.MathUtils.randFloat(-4, 4),
+        THREE.MathUtils.randFloat(-4, 4),
+        THREE.MathUtils.randFloat(-4, 4)
+      )
+    });
+  }
+}
+
+function shootRadialVolley() {
+  if (!boss) return;
+  const origin = new THREE.Vector3(boss.position.x, boss.position.y + 3.6, boss.position.z);
+  const count = 16;
+  for (let i = 0; i < count; i++) {
+    const angle = (i / count) * Math.PI * 2;
+    const bolt = new THREE.Mesh(
+      new THREE.SphereGeometry(0.6, 12, 12),
+      new THREE.MeshBasicMaterial({ color: 0x44ffee, transparent: true, opacity: 0.75 })
+    );
+    bolt.position.copy(origin);
+    const dir = new THREE.Vector3(
+      Math.cos(angle),
+      THREE.MathUtils.randFloat(-0.15, 0.15),
+      Math.sin(angle)
+    );
+    registerBossAttack(bolt, dir.normalize().multiplyScalar(18), {
+      life: 4.5,
+      spin: new THREE.Vector3(
+        THREE.MathUtils.randFloat(-2, 2),
+        THREE.MathUtils.randFloat(-2, 2),
+        THREE.MathUtils.randFloat(-2, 2)
+      )
+    });
+  }
+  const ringLight = new THREE.PointLight(0x33ffee, 18, 32);
+  ringLight.position.copy(origin);
+  scene.add(ringLight);
+  setTimeout(() => scene.remove(ringLight), 320);
+}
+
+function shootHomingShards() {
+  if (!boss) return;
+  const origin = new THREE.Vector3(boss.position.x, boss.position.y + 3.2, boss.position.z);
+  for (let i = 0; i < 5; i++) {
+    const shard = new THREE.Mesh(
+      new THREE.TetrahedronGeometry(0.9, 0),
+      new THREE.MeshBasicMaterial({ color: 0xffff66, transparent: true, opacity: 0.85 })
+    );
+    shard.position.copy(origin);
+    const dir = new THREE.Vector3(
+      THREE.MathUtils.randFloatSpread(0.6),
+      THREE.MathUtils.randFloat(-0.1, 0.4),
+      THREE.MathUtils.randFloatSpread(0.6)
+    ).normalize();
+    registerBossAttack(shard, dir.multiplyScalar(12), {
+      life: 5,
+      spin: new THREE.Vector3(
+        THREE.MathUtils.randFloat(-5, 5),
+        THREE.MathUtils.randFloat(-5, 5),
+        THREE.MathUtils.randFloat(-5, 5)
+      ),
+      homing: true
+    });
+  }
+  const glow = new THREE.PointLight(0xffff66, 12, 28);
+  glow.position.copy(origin);
+  scene.add(glow);
+  setTimeout(() => scene.remove(glow), 260);
+}
+
+function performBossAttack() {
+  if (!gameActive || victoryAchieved || defeat) return;
+  switch (bossAttackPattern) {
+    case 0:
+      shootFocusedVolley();
+      break;
+    case 1:
+      shootCrystalSpread();
+      break;
+    case 2:
+      shootRadialVolley();
+      break;
+    default:
+      shootHomingShards();
+      break;
+  }
+  bossAttackPattern = (bossAttackPattern + 1) % 4;
+  attackCooldownTimer = THREE.MathUtils.randFloat(BOSS_ATTACK_COOLDOWN_MIN, BOSS_ATTACK_COOLDOWN_MAX);
+}
+
+function updateBossBehavior(delta) {
+  if (!boss || !gameActive) return;
+  bossTime += delta;
+  bossMoveTimer += delta;
+  bossHitReaction = Math.max(0, bossHitReaction - delta * 1.5);
+
+  if (bossMoveTimer >= BOSS_MOVE_INTERVAL) {
+    bossMoveTimer = 0;
+    bossTargetPosition.x = THREE.MathUtils.randFloat(-BOSS_MOVE_RADIUS_X, BOSS_MOVE_RADIUS_X);
+    bossTargetPosition.z = THREE.MathUtils.randFloat(BOSS_MOVE_MIN_Z, BOSS_MOVE_MAX_Z);
+  }
+
+  boss.position.x += (bossTargetPosition.x - boss.position.x) * delta * 2.4;
+  boss.position.z += (bossTargetPosition.z - boss.position.z) * delta * 2.4;
+
+  const idleHeight = 6.5 + Math.sin(bossTime * 2.2) * 0.6;
+  boss.position.y = idleHeight + bossHitReaction * 0.6;
+  boss.rotation.y = Math.sin(bossTime * 0.6) * 0.15;
+  boss.rotation.x = (bossTargetPosition.z - boss.position.z) * 0.02;
+  boss.rotation.z = -(bossTargetPosition.x - boss.position.x) * 0.02;
+
+  if (bossHitReaction > 0) {
+    boss.position.x += Math.sin(bossTime * 42) * bossHitReaction * 1.6;
+    boss.position.y += Math.cos(bossTime * 38) * bossHitReaction * 0.9;
+  }
+
+  if (bossCore) {
+    bossCore.rotation.x += delta * 2.6;
+    bossCore.rotation.y += delta * 3.1;
+    const scale = 1 + Math.sin(bossTime * 4.2) * 0.08 + bossHitReaction * 0.05;
+    bossCore.scale.setScalar(scale);
+  }
+
+  bossFloatingCrystals.forEach((crystal, index) => {
+    const angle = bossTime * 1.4 + index;
+    crystal.position.x = Math.cos(angle) * 4.2;
+    crystal.position.z = Math.sin(angle) * 4.2;
+    crystal.position.y = Math.sin(bossTime * 2 + index) * 2.4;
+    crystal.rotation.x += delta * 2.1;
+    crystal.rotation.y += delta * 1.8;
+  });
+
+  bossEnergyRings.forEach((ring, index) => {
+    ring.rotation.z += delta * (index % 2 === 0 ? 0.5 : -0.6);
+    const scale = 1 + Math.sin(bossTime * 2.8 + index) * 0.05;
+    ring.scale.set(scale, scale, scale);
+  });
+
+  bossShoulders.forEach((data, idx) => {
+    const group = data.group;
+    const cannon = data.cannon;
+    const swing = data.swingOffset;
+    group.position.y = 1.6 + Math.sin(bossTime * 1.9 + swing) * 0.7;
+    group.rotation.y = Math.sin(bossTime * 1.7 + swing) * 0.4;
+    if (cannon.material && cannon.material.emissive) {
+      cannon.material.emissiveIntensity = 0.7 + Math.sin(bossTime * 7 + idx) * 0.35;
+    }
+  });
+}
+
+function applyCameraRotation() {
+  cameraEuler.set(pitch, yaw, 0);
+  camera.quaternion.setFromEuler(cameraEuler);
+}
+
+function updateMovement(delta) {
+  const joystickX = Math.abs(moveJoystickData.x) > 0.01 ? moveJoystickData.x : 0;
+  const joystickY = Math.abs(moveJoystickData.y) > 0.01 ? moveJoystickData.y : 0;
+  inputVector.set(joystickX, 0, -joystickY);
+  if (inputVector.x === 0 && inputVector.z === 0) return;
+  if (inputVector.lengthSq() > 1) {
+    inputVector.normalize();
+  }
+  forwardVector.set(0, 0, -1).applyQuaternion(camera.quaternion);
+  forwardVector.y = 0;
+  if (forwardVector.lengthSq() > 0.0001) {
+    forwardVector.normalize();
+  } else {
+    forwardVector.set(0, 0, -1);
+  }
+  rightVector.crossVectors(forwardVector, worldUp);
+  if (rightVector.lengthSq() > 0.0001) {
+    rightVector.normalize();
+  } else {
+    rightVector.set(1, 0, 0);
+  }
+  displacement.copy(forwardVector).multiplyScalar(inputVector.z);
+  displacement.addScaledVector(rightVector, inputVector.x);
+  if (displacement.lengthSq() === 0) return;
+  displacement.normalize().multiplyScalar(MOVE_SPEED * delta);
+  camera.position.add(displacement);
+  camera.position.y = 1.6;
+}
+
+function handleResize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+  renderer.setPixelRatio(dpr);
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+}
+
+handleResize();
+window.addEventListener("resize", handleResize);
+
+const spark = new SparkRenderer({
+  renderer,
+  maxStdDev: Math.sqrt(5),
+  maxPixelRadius: 256,
+  clipXY: 1.2,
+  view: { stochastic: false, sortRadial: true, sortDistance: 0.01, sortCoorient: 0.995, sort32: false }
+});
+scene.add(spark);
+
+const loadingEl = document.getElementById("loading");
+const splat = new SplatMesh({
+  url: SPZ_URL,
+  onLoad: () => {
+    if (loadingEl) loadingEl.remove();
+    renderer.render(scene, camera);
+  }
+});
+splat.scale.setScalar(3);
+splat.position.set(0, 0, -6);
+splat.rotation.set(Math.PI, 0, 0);
+scene.add(splat);
+
+function createGyroControls() {
+  const deviceOrientation = { alpha: null, beta: null, gamma: null };
+  let screenOrientation = window.orientation || 0;
+  const zee = new THREE.Vector3(0, 0, 1);
+  const euler = new THREE.Euler();
+  const q0 = new THREE.Quaternion();
+  const q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5));
+
+  const onDeviceOrientationChangeEvent = (event) => {
+    deviceOrientation.alpha = event.alpha;
+    deviceOrientation.beta = event.beta;
+    deviceOrientation.gamma = event.gamma;
+  };
+
+  const onScreenOrientationChangeEvent = () => {
+    screenOrientation = window.orientation || 0;
+  };
+
+  return {
+    connect() {
+      onScreenOrientationChangeEvent();
+      window.addEventListener("orientationchange", onScreenOrientationChangeEvent);
+      window.addEventListener("deviceorientation", onDeviceOrientationChangeEvent);
+    },
+    disconnect() {
+      window.removeEventListener("orientationchange", onScreenOrientationChangeEvent);
+      window.removeEventListener("deviceorientation", onDeviceOrientationChangeEvent);
+    },
+    update() {
+      if (deviceOrientation.alpha === null && deviceOrientation.beta === null && deviceOrientation.gamma === null) {
+        return;
+      }
+      const alpha = deviceOrientation.alpha !== null ? THREE.MathUtils.degToRad(deviceOrientation.alpha) : 0;
+      const beta = deviceOrientation.beta !== null ? THREE.MathUtils.degToRad(deviceOrientation.beta) : 0;
+      const gamma = deviceOrientation.gamma !== null ? THREE.MathUtils.degToRad(deviceOrientation.gamma) : 0;
+      const orient = THREE.MathUtils.degToRad(screenOrientation);
+      euler.set(beta, alpha, -gamma, "YXZ");
+      camera.quaternion.setFromEuler(euler);
+      camera.quaternion.multiply(q1);
+      camera.quaternion.multiply(q0.setFromAxisAngle(zee, -orient));
+      cameraEuler.setFromQuaternion(camera.quaternion);
+      pitch = cameraEuler.x;
+      yaw = cameraEuler.y;
+    }
+  };
+}
+
+async function setupGyroscope() {
+  if (!isMobile || gyroActive || typeof DeviceOrientationEvent === "undefined") {
+    return false;
+  }
+  if (typeof DeviceOrientationEvent.requestPermission === "function") {
+    try {
+      const permission = await DeviceOrientationEvent.requestPermission();
+      if (permission !== "granted") {
         return false;
       }
-
-      if (typeof DeviceOrientationEvent.requestPermission === "function") {
-        try {
-          const permission = await DeviceOrientationEvent.requestPermission();
-          if (permission !== "granted") {
-            return false;
-          }
-        } catch (error) {
-          console.error("Failed to enable gyroscope:", error);
-          return false;
-        }
-      }
-
-      if (!gyroControls) {
-        gyroControls = createGyroControls();
-        gyroControls.connect();
-      }
-
-      gyroActive = true;
-      isGyroAvailable = true;
-      touchLookActive = false;
-
-      if (document.pointerLockElement) {
-        document.exitPointerLock();
-      }
-
-      pointerLocked = false;
-      renderer.domElement.style.cursor = "auto";
-
-      if (gyroPermissionEl) {
-        gyroPermissionEl.style.display = "none";
-      }
-
-      return true;
-    }
-
-    function setupJoystick(container, stick, callback) {
-      let active = false;
-      let currentX = 0;
-      let currentY = 0;
-      const maxDistance = 45;
-
-      function updateStickPosition() {
-        stick.style.transform = `translate(calc(-50% + ${currentX}px), calc(-50% + ${currentY}px))`;
-      }
-
-      function handleStart(e) {
-        active = true;
-        if (e.cancelable !== false) e.preventDefault();
-        const touch = e.touches ? e.touches[0] : e;
-        const rect = container.getBoundingClientRect();
-        currentX = touch.clientX - rect.left - rect.width / 2;
-        currentY = touch.clientY - rect.top - rect.height / 2;
-
-        const distance = Math.sqrt(currentX * currentX + currentY * currentY);
-        if (distance > maxDistance) {
-          currentX = (currentX / distance) * maxDistance;
-          currentY = (currentY / distance) * maxDistance;
-        }
-
-        updateStickPosition();
-        callback({ x: currentX / maxDistance, y: currentY / maxDistance });
-      }
-
-      function handleMove(e) {
-        if (!active) return;
-        if (e.cancelable !== false) e.preventDefault();
-        const touch = e.touches ? e.touches[0] : e;
-        const rect = container.getBoundingClientRect();
-        currentX = touch.clientX - rect.left - rect.width / 2;
-        currentY = touch.clientY - rect.top - rect.height / 2;
-
-        const distance = Math.sqrt(currentX * currentX + currentY * currentY);
-        if (distance > maxDistance) {
-          currentX = (currentX / distance) * maxDistance;
-          currentY = (currentY / distance) * maxDistance;
-        }
-
-        updateStickPosition();
-        callback({ x: currentX / maxDistance, y: currentY / maxDistance });
-      }
-
-      function handleEnd() {
-        active = false;
-        currentX = 0;
-        currentY = 0;
-        updateStickPosition();
-        callback({ x: 0, y: 0 });
-      }
-
-      container.addEventListener("touchstart", handleStart, { passive: false });
-      document.addEventListener("touchmove", handleMove, { passive: false });
-      document.addEventListener("touchend", handleEnd);
-      document.addEventListener("touchcancel", handleEnd);
-
-      container.addEventListener("mousedown", handleStart);
-      document.addEventListener("mousemove", handleMove);
-      document.addEventListener("mouseup", handleEnd);
-
-      updateStickPosition();
-    }
-
-    function onTouchStartLook(event) {
-      if (!isMobile || gyroActive) return;
-      if (event.target && typeof event.target.closest === 'function') {
-        if (event.target.closest('#moveJoystick') || event.target.closest('#shootButton')) {
-          return;
-        }
-      }
-      const touch = event.touches && event.touches[0];
-      if (!touch) return;
-      touchLookActive = true;
-      lastTouchX = touch.clientX;
-      lastTouchY = touch.clientY;
-      if (event.cancelable !== false) event.preventDefault();
-    }
-
-    function onTouchMoveLook(event) {
-      if (!touchLookActive || gyroActive) return;
-      const touch = event.touches && event.touches[0];
-      if (!touch) return;
-      const deltaX = touch.clientX - lastTouchX;
-      const deltaY = touch.clientY - lastTouchY;
-      lastTouchX = touch.clientX;
-      lastTouchY = touch.clientY;
-      yaw -= deltaX * POINTER_SENSITIVITY;
-      pitch -= deltaY * POINTER_SENSITIVITY;
-      pitch = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, pitch));
-      applyCameraRotation();
-      if (event.cancelable !== false) event.preventDefault();
-    }
-
-    function onTouchEndLook() {
-      touchLookActive = false;
-    }
-
-    if (requestGyroButton) {
-      requestGyroButton.addEventListener("click", async () => {
-        const enabled = await setupGyroscope();
-        if (!enabled && gyroPermissionEl) {
-          gyroPermissionEl.style.display = "flex";
-        }
-      });
-    }
-
-    if (isMobile && gyroPermissionEl && typeof DeviceOrientationEvent !== "undefined") {
-      if (typeof DeviceOrientationEvent.requestPermission === "function") {
-        gyroPermissionEl.style.display = "flex";
-      } else {
-        setupGyroscope();
-      }
-    }
-
-    if (isMobile) {
-      if (mobileUI) mobileUI.style.display = "block";
-      renderer.domElement.style.touchAction = "none";
-      if (moveJoystick && moveStick) {
-        setupJoystick(moveJoystick, moveStick, (data) => {
-          moveJoystickData = data;
-        });
-      }
-    }
-
-    const spark = new SparkRenderer({
-      renderer,
-      maxStdDev: Math.sqrt(5),
-      maxPixelRadius: 256,
-      clipXY: 1.2,
-      view: { stochastic: false, sortRadial: true, sortDistance: 0.01, sortCoorient: 0.995, sort32: false }
-    });
-    scene.add(spark);
-
-    const loadingEl = document.getElementById("loading");
-    const splat = new SplatMesh({
-      url: SPZ_URL,
-      onLoad: () => {
-        if (loadingEl) loadingEl.remove();
-        renderer.render(scene, camera);
-      }
-    });
-
-    splat.scale.setScalar(3);
-    splat.position.set(0, 0, -6);
-    splat.rotation.set(0, 0, 0);
-    splat.rotateX(Math.PI);
-    scene.add(splat);
-
-    function createMeteorMesh(radius = 1.2) {
-      // 低ポリ隕石: 正二十面体をノイズで歪ませる
-      const geom = new THREE.IcosahedronGeometry(radius, 1);
-      const pos = geom.attributes.position;
-      const tmp = new THREE.Vector3();
-      for (let i = 0; i < pos.count; i++) {
-        tmp.fromBufferAttribute(pos, i);
-        const n = tmp.clone().normalize();
-        const noise = (Math.sin(tmp.x * 2.3) + Math.sin(tmp.y * 1.7) + Math.sin(tmp.z * 2.9)) * 0.12;
-        const scale = 1 + noise + (Math.random() - 0.5) * 0.06;
-        tmp.copy(n).multiplyScalar(radius * scale);
-        pos.setXYZ(i, tmp.x, tmp.y, tmp.z);
-      }
-      geom.computeVertexNormals();
-      const core = new THREE.Mesh(geom, meteorMaterial.clone());
-
-      // 表面の岩片（小さな起伏）
-      const group = new THREE.Group();
-      group.add(core);
-      const bumps = 5 + Math.floor(Math.random() * 4);
-      for (let i = 0; i < bumps; i++) {
-        const b = new THREE.IcosahedronGeometry(radius * THREE.MathUtils.randFloat(0.12, 0.22), 0);
-        const m = new THREE.Mesh(b, meteorAccentMaterial.clone());
-        // ランダムな位置に付ける
-        const dir = new THREE.Vector3(
-          Math.random() * 2 - 1,
-          Math.random() * 2 - 1,
-          Math.random() * 2 - 1
-        ).normalize();
-        const dist = radius * THREE.MathUtils.randFloat(0.8, 1.05);
-        m.position.copy(dir.multiplyScalar(dist));
-        m.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
-        group.add(m);
-      }
-      return group;
-    }
-
-    function createTarget(x, y, z, options = {}) {
-      const { velocity = null, maxLife = null } = options;
-      const group = new THREE.Group();
-      const meteor = createMeteorMesh(1.8);
-      group.add(meteor);
-      const glow = new THREE.Mesh(meteorGlowGeometry, meteorGlowMaterial.clone());
-      glow.scale.setScalar(0.9);
-      group.add(glow);
-      group.position.set(x, y, z);
-      // 隕石は自転させる
-      const spinAxis = new THREE.Vector3(Math.random(), Math.random(), Math.random()).normalize();
-      const spinSpeed = THREE.MathUtils.randFloat(0.4, 1.0);
-      const fallVelocity = velocity ? velocity.clone() : new THREE.Vector3(
-        THREE.MathUtils.randFloatSpread(0.4),
-        -THREE.MathUtils.randFloat(0.25, 0.5),
-        THREE.MathUtils.randFloat(0.4, 1.1)
-      );
-      const lifespan = maxLife ?? THREE.MathUtils.randFloat(9, 14);
-      group.scale.setScalar(1);
-      group.userData = {
-        hit: false,
-        fade: 0,
-        radius: 1.8,
-        spinAxis,
-        spinSpeed,
-        velocity: fallVelocity,
-        life: 0,
-        maxLife: lifespan
-      };
-      scene.add(group);
-      targets.push(group);
-    }
-
-    function createShatter(position) {
-      const count = 16 + Math.floor(Math.random() * 10);
-      for (let i = 0; i < count; i++) {
-        const r = THREE.MathUtils.randFloat(0.18, 0.35);
-        const geom = new THREE.IcosahedronGeometry(r, 0);
-        const useAccent = Math.random() < 0.45;
-        const mat = (useAccent ? meteorAccentMaterial : meteorMaterial).clone();
-        mat.transparent = true;
-        const piece = new THREE.Mesh(geom, mat);
-        piece.position.copy(position);
-        piece.position.x += (Math.random() - 0.5) * 0.3;
-        piece.position.y += (Math.random() - 0.5) * 0.3;
-        piece.position.z += (Math.random() - 0.5) * 0.3;
-        piece.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
-        const dir = new THREE.Vector3(Math.random() - 0.5, Math.random(), Math.random() - 0.5).normalize();
-        const speed = THREE.MathUtils.randFloat(4, 9);
-        const angVel = new THREE.Vector3(
-          THREE.MathUtils.randFloat(-6, 6),
-          THREE.MathUtils.randFloat(-6, 6),
-          THREE.MathUtils.randFloat(-6, 6)
-        );
-        fragments.push({ mesh: piece, velocity: dir.multiplyScalar(speed), life: 1.2, angular: angVel });
-        scene.add(piece);
-      }
-    }
-
-    function createPowerUp(position) {
-      const group = new THREE.Group();
-      const core = new THREE.Mesh(powerUpGeometry, powerUpCoreMaterial.clone());
-      const glow = new THREE.Mesh(powerUpGlowGeometry, powerUpGlowMaterial.clone());
-      const light = new THREE.PointLight(0x60d4ff, 1.6, 8);
-      group.add(core);
-      group.add(glow);
-      group.add(light);
-      group.position.copy(position);
-      const baseHeight = position.y;
-      scene.add(group);
-      powerUps.push({
-        group,
-        glow,
-        light,
-        elapsed: 0,
-        life: POWERUP_LIFETIME,
-        rotationSpeed: THREE.MathUtils.randFloat(0.9, 1.6),
-        pulseOffset: Math.random() * Math.PI * 2,
-        bobSpeed: THREE.MathUtils.randFloat(1.2, 2.1),
-        baseHeight
-      });
-    }
-
-    function spawnPowerUp() {
-      if (!roundActive || powerUps.length >= POWERUP_MAX_ACTIVE) {
-        return;
-      }
-      const distance = THREE.MathUtils.randFloat(3.5, 6.5);
-      const angle = THREE.MathUtils.randFloat(0, Math.PI * 2);
-      powerUpCandidate.set(
-        camera.position.x + Math.cos(angle) * distance,
-        THREE.MathUtils.randFloat(1.1, 1.8),
-        camera.position.z + Math.sin(angle) * distance
-      );
-      createPowerUp(powerUpCandidate);
-    }
-
-    function scheduleNextPowerUp(immediate = false) {
-      const minDelay = immediate ? POWERUP_SPAWN_DELAY_MIN * 0.5 : POWERUP_SPAWN_DELAY_MIN;
-      const maxDelay = immediate ? POWERUP_SPAWN_DELAY_MAX * 0.75 : POWERUP_SPAWN_DELAY_MAX;
-      nextPowerUpDelay = THREE.MathUtils.randFloat(minDelay, maxDelay);
-      powerUpSpawnAccumulator = 0;
-    }
-
-    function updatePowerUpSpawning(delta) {
-      if (!roundActive) return;
-      if (powerUps.length >= POWERUP_MAX_ACTIVE) return;
-      if (nextPowerUpDelay <= 0) return;
-      powerUpSpawnAccumulator += delta;
-      if (powerUpSpawnAccumulator >= nextPowerUpDelay) {
-        spawnPowerUp();
-        scheduleNextPowerUp();
-      }
-    }
-
-    function updatePowerUps(delta) {
-      if (powerUps.length === 0) return;
-      camera.getWorldPosition(cameraWorldPosition);
-      for (let i = powerUps.length - 1; i >= 0; i--) {
-        const data = powerUps[i];
-        data.elapsed += delta;
-        data.life -= delta;
-        data.group.rotation.y += data.rotationSpeed * delta;
-        const bob = Math.sin((data.elapsed + data.pulseOffset) * data.bobSpeed) * 0.2;
-        data.group.position.y = data.baseHeight + bob;
-        const pulse = 1 + Math.sin(data.elapsed * data.bobSpeed * 1.8 + data.pulseOffset) * 0.22;
-        data.glow.scale.setScalar(pulse);
-
-        if (data.life <= 0) {
-          scene.remove(data.group);
-          powerUps.splice(i, 1);
-          scheduleNextPowerUp(true);
-          continue;
-        }
-
-        if (cameraWorldPosition.distanceTo(data.group.position) <= POWERUP_PICKUP_RADIUS) {
-          activateTripleShot();
-          scene.remove(data.group);
-          powerUps.splice(i, 1);
-          scheduleNextPowerUp();
-        }
-      }
-    }
-
-    function clearPowerUps() {
-      for (let i = powerUps.length - 1; i >= 0; i--) {
-        scene.remove(powerUps[i].group);
-      }
-      powerUps.length = 0;
-    }
-
-    function activateTripleShot() {
-      tripleShotActive = true;
-      tripleShotTimer = TRIPLE_SHOT_DURATION;
-      powerUpSpawnAccumulator = 0;
-      if (crosshair) {
-        crosshair.classList.add("powered");
-      }
-    }
-
-    function updateTripleShot(delta) {
-      if (!tripleShotActive) return;
-      tripleShotTimer -= delta;
-      if (tripleShotTimer <= 0) {
-        tripleShotActive = false;
-        tripleShotTimer = 0;
-        if (crosshair) {
-          crosshair.classList.remove("powered");
-        }
-      }
-    }
-
-    function spawnRandomTarget() {
-      if (!roundActive || targets.length >= MAX_ACTIVE_TARGETS) {
-        return;
-      }
-
-      const minSeparation = 5;
-      const maxAttemptsPerTarget = 300;
-      const candidate = new THREE.Vector3();
-      const velocityDir = new THREE.Vector3();
-
-      let placed = false;
-      let attempts = 0;
-
-      const computeVelocity = () => {
-        let baseAngle = Math.atan2(
-          candidate.z - FIELD_CENTER.z,
-          candidate.x - FIELD_CENTER.x
-        );
-        if (!Number.isFinite(baseAngle)) {
-          baseAngle = THREE.MathUtils.randFloat(0, Math.PI * 2);
-        }
-        const sidewaysOffset = THREE.MathUtils.randFloatSpread(Math.PI * 0.6);
-        const sidewaysAngle = baseAngle + Math.PI / 2 + sidewaysOffset;
-        velocityDir.set(Math.cos(sidewaysAngle), 0, Math.sin(sidewaysAngle));
-        const speed = THREE.MathUtils.randFloat(0.8, 1.8);
-        velocityDir.multiplyScalar(speed);
-        velocityDir.y = -THREE.MathUtils.randFloat(0.35, 0.75);
-        return velocityDir;
-      };
-
-      const pickCandidatePosition = () => {
-        const angle = THREE.MathUtils.randFloat(0, Math.PI * 2);
-        const radius = THREE.MathUtils.randFloat(SPAWN_RADIUS_MIN, SPAWN_RADIUS_MAX);
-        const height = THREE.MathUtils.randFloat(SPAWN_HEIGHT_MIN, SPAWN_HEIGHT_MAX);
-        candidate.set(
-          camera.position.x + Math.cos(angle) * radius,
-          camera.position.y + height,
-          camera.position.z + Math.sin(angle) * radius
-        );
-      };
-
-      while (!placed && attempts < maxAttemptsPerTarget) {
-        pickCandidatePosition();
-
-        let tooClose = false;
-        for (let j = 0; j < targets.length; j++) {
-          if (candidate.distanceToSquared(targets[j].position) < minSeparation * minSeparation) {
-            tooClose = true;
-            break;
-          }
-        }
-
-        if (!tooClose) {
-          const maxLife = THREE.MathUtils.randFloat(8, 13);
-          const meteorVelocity = computeVelocity();
-          createTarget(candidate.x, candidate.y, candidate.z, { velocity: meteorVelocity, maxLife });
-          placed = true;
-        }
-
-        attempts++;
-      }
-
-      if (!placed) {
-        pickCandidatePosition();
-        const maxLife = THREE.MathUtils.randFloat(8, 13);
-        const fallbackVelocity = computeVelocity();
-        createTarget(candidate.x, candidate.y, candidate.z, { velocity: fallbackVelocity, maxLife });
-      }
-    }
-
-    function clearTargets() {
-      for (let i = targets.length - 1; i >= 0; i--) {
-        scene.remove(targets[i]);
-      }
-      targets.length = 0;
-    }
-
-    function clearBullets() {
-      for (let i = bullets.length - 1; i >= 0; i--) {
-        scene.remove(bullets[i].mesh);
-      }
-      bullets.length = 0;
-    }
-
-    function clearFragments() {
-      for (let i = fragments.length - 1; i >= 0; i--) {
-        scene.remove(fragments[i].mesh);
-      }
-      fragments.length = 0;
-    }
-
-    function scheduleNextSpawn() {
-      nextSpawnDelay = THREE.MathUtils.randFloat(SPAWN_DELAY_MIN, SPAWN_DELAY_MAX);
-      spawnAccumulator = 0;
-    }
-
-    function spawnInitialWave() {
-      if (!roundActive) return;
-      const minCount = Math.min(MAX_ACTIVE_TARGETS, INITIAL_SPAWN_MIN);
-      const maxCount = Math.min(MAX_ACTIVE_TARGETS, INITIAL_SPAWN_MAX);
-      const spawnCount = Math.floor(THREE.MathUtils.randFloat(minCount, maxCount + 1));
-      for (let i = 0; i < spawnCount && targets.length < MAX_ACTIVE_TARGETS; i++) {
-        spawnRandomTarget();
-      }
-      scheduleNextSpawn();
-    }
-
-    function updateSpawning(delta) {
-      if (!roundActive) return;
-      if (targets.length >= MAX_ACTIVE_TARGETS) return;
-      if (nextSpawnDelay <= 0) {
-        scheduleNextSpawn();
-        return;
-      }
-      spawnAccumulator += delta;
-      if (spawnAccumulator >= nextSpawnDelay) {
-        spawnRandomTarget();
-        scheduleNextSpawn();
-      }
-    }
-
-    function startRound() {
-      if (roundActive) return;
-      const shouldResetTargets = roundEnded || targets.length === 0;
-      roundActive = true;
-      roundEnded = false;
-      timeRemaining = ROUND_DURATION;
-      score = 0;
-      spawnAccumulator = 0;
-      nextSpawnDelay = 0;
-      clearBullets();
-      clearFragments();
-      clearPowerUps();
-      tripleShotActive = false;
-      tripleShotTimer = 0;
-      powerUpSpawnAccumulator = 0;
-      scheduleNextPowerUp(true);
-      if (crosshair) {
-        crosshair.classList.remove("powered");
-      }
-      if (shouldResetTargets) {
-        clearTargets();
-      }
-      spawnInitialWave();
-      updateScoreDisplay();
-    }
-
-    function endRound() {
-      if (!roundActive) return;
-      roundActive = false;
-      roundEnded = true;
-      timeRemaining = 0;
-      clearBullets();
-      clearFragments();
-      clearTargets();
-      clearPowerUps();
-      spawnAccumulator = 0;
-      nextSpawnDelay = 0;
-      powerUpSpawnAccumulator = 0;
-      nextPowerUpDelay = 0;
-      tripleShotActive = false;
-      tripleShotTimer = 0;
-      if (crosshair) {
-        crosshair.classList.remove("powered");
-      }
-      if (score > bestScore) {
-        bestScore = score;
-        try {
-          localStorage.setItem(SCORE_STORAGE_KEY, String(bestScore));
-        } catch (error) {
-          console.warn("Failed to store high score:", error);
-        }
-      }
-      updateScoreDisplay();
-    }
-
-    function handleTargetHit(target) {
-      if (target.userData.hit) return;
-      target.userData.hit = true;
-      // 破片を生成
-      const pos = new THREE.Vector3();
-      target.getWorldPosition(pos);
-      createShatter(pos);
-      // ターゲットを即時削除
-      const idx = targets.indexOf(target);
-      if (idx !== -1) {
-        scene.remove(target);
-        targets.splice(idx, 1);
-      }
-      if (roundActive) {
-        score++;
-        spawnRandomTarget();
-        updateScoreDisplay();
-      }
-    }
-
-    function updateFragments(delta) {
-      for (let i = fragments.length - 1; i >= 0; i--) {
-        const f = fragments[i];
-        f.life -= delta;
-        // 移動 & 重力
-        f.mesh.position.addScaledVector(f.velocity, delta);
-        f.velocity.y -= 9.8 * delta * 0.6;
-        // 回転
-        f.mesh.rotation.x += f.angular.x * delta;
-        f.mesh.rotation.y += f.angular.y * delta;
-        f.mesh.rotation.z += f.angular.z * delta;
-        // フェード
-        const t = Math.max(0, f.life / 1.2);
-        if (f.mesh.material && 'opacity' in f.mesh.material) {
-          f.mesh.material.opacity = t;
-        }
-        if (f.life <= 0) {
-          scene.remove(f.mesh);
-          fragments.splice(i, 1);
-        }
-      }
-    }
-
-    function createBullet(direction = null, lateralOffset = 0) {
-      const bullet = new THREE.Mesh(bulletGeometry, bulletMaterial.clone());
-      if (direction) {
-        bulletTempDirection.copy(direction).normalize();
-      } else {
-        camera.getWorldDirection(bulletTempDirection);
-        bulletTempDirection.normalize();
-      }
-      camera.getWorldPosition(bulletStartPosition);
-      bullet.position.copy(bulletStartPosition);
-      if (lateralOffset !== 0) {
-        bulletRightVector.crossVectors(bulletTempDirection, worldUp);
-        if (bulletRightVector.lengthSq() > 0.0001) {
-          bulletRightVector.normalize();
-          bullet.position.addScaledVector(bulletRightVector, lateralOffset);
-        }
-      }
-      bullet.position.addScaledVector(bulletTempDirection, 0.6);
-      scene.add(bullet);
-      bullets.push({ mesh: bullet, velocity: bulletTempDirection.clone().multiplyScalar(BULLET_SPEED), life: BULLET_LIFETIME });
-    }
-
-    function shoot() {
-      if (!roundActive) {
-        startRound();
-      }
-      if (!roundActive) return;
-
-      camera.getWorldDirection(bulletBaseDirection);
-      bulletBaseDirection.normalize();
-
-      if (tripleShotActive) {
-        const centerDirection = bulletBaseDirection.clone();
-        const leftDirection = bulletBaseDirection.clone().applyAxisAngle(worldUp, TRIPLE_SHOT_SPREAD_ANGLE);
-        const rightDirection = bulletBaseDirection.clone().applyAxisAngle(worldUp, -TRIPLE_SHOT_SPREAD_ANGLE);
-        createBullet(leftDirection, -TRIPLE_SHOT_LATERAL_OFFSET);
-        createBullet(centerDirection, 0);
-        createBullet(rightDirection, TRIPLE_SHOT_LATERAL_OFFSET);
-      } else {
-        createBullet(bulletBaseDirection.clone(), 0);
-      }
-
-      flashCrosshair();
-    }
-
-    function updateBullets(delta) {
-      for (let i = bullets.length - 1; i >= 0; i--) {
-        const bulletData = bullets[i];
-        bulletData.life -= delta;
-        bulletData.mesh.position.addScaledVector(bulletData.velocity, delta);
-
-        if (bulletData.life <= 0) {
-          scene.remove(bulletData.mesh);
-          bullets.splice(i, 1);
-          continue;
-        }
-
-        let hitTarget = false;
-        for (let j = targets.length - 1; j >= 0; j--) {
-          const target = targets[j];
-          if (target.userData.hit) continue;
-          target.getWorldPosition(targetWorldPosition);
-          const radius = target.userData.radius * target.scale.x;
-          if (bulletData.mesh.position.distanceTo(targetWorldPosition) <= radius) {
-            handleTargetHit(target);
-            scene.remove(bulletData.mesh);
-            bullets.splice(i, 1);
-            hitTarget = true;
-            break;
-          }
-        }
-
-        if (hitTarget) {
-          continue;
-        }
-      }
-    }
-
-    function updateTargets(delta) {
-      for (let i = targets.length - 1; i >= 0; i--) {
-        const target = targets[i];
-        const data = target.userData || {};
-        if (!data.hit) {
-          // 自転
-          if (data.spinAxis && typeof data.spinSpeed === "number") {
-            const angle = data.spinSpeed * delta;
-            target.rotateOnAxis(data.spinAxis, angle);
-          }
-
-          if (data.velocity instanceof THREE.Vector3) {
-            target.position.addScaledVector(data.velocity, delta);
-          }
-
-          if (typeof data.life === "number" && typeof data.maxLife === "number" && data.maxLife > 0) {
-            data.life += delta;
-            const lifeRatio = THREE.MathUtils.clamp(data.life / data.maxLife, 0, 1);
-            const scale = Math.max(0, 1 - lifeRatio);
-            target.scale.setScalar(scale);
-            if (scale <= 0.05 || target.position.y <= 0.6) {
-              scene.remove(target);
-              targets.splice(i, 1);
-              if (roundActive) {
-                spawnRandomTarget();
-              }
-              continue;
-            }
-          }
-        } else {
-          data.fade += delta;
-          const scale = Math.max(0, 1 - data.fade * 3);
-          target.scale.setScalar(scale);
-          if (scale <= 0.05) {
-            scene.remove(target);
-            targets.splice(i, 1);
-            if (roundActive) {
-              spawnRandomTarget();
-            }
-          }
-        }
-      }
-    }
-
-    if (shootButton) {
-      shootButton.addEventListener("click", (event) => {
-        event.preventDefault();
-        shoot();
-      });
-      shootButton.addEventListener("touchstart", (event) => {
-        if (event.cancelable !== false) event.preventDefault();
-        shoot();
-      }, { passive: false });
-    }
-
-    document.addEventListener("mousedown", (event) => {
-      if (event.button === 0 && !isMobile && !gyroActive && pointerLocked) {
-        shoot();
-      }
-    });
-
-    renderer.domElement.addEventListener("click", () => {
-      if (gyroActive || isMobile) return;
-      if (!pointerLocked) {
-        renderer.domElement.requestPointerLock();
-      }
-    });
-
-    document.addEventListener("pointerlockchange", () => {
-      pointerLocked = document.pointerLockElement === renderer.domElement;
-      renderer.domElement.style.cursor = pointerLocked ? "none" : (gyroActive ? "auto" : "grab");
-    });
-
-    renderer.domElement.addEventListener("touchstart", onTouchStartLook, { passive: false });
-    renderer.domElement.addEventListener("touchmove", onTouchMoveLook, { passive: false });
-    renderer.domElement.addEventListener("touchend", onTouchEndLook);
-    renderer.domElement.addEventListener("touchcancel", onTouchEndLook);
-
-    document.addEventListener("mousemove", (event) => {
-      if (!pointerLocked || gyroActive) return;
-      yaw -= event.movementX * POINTER_SENSITIVITY;
-      pitch -= event.movementY * POINTER_SENSITIVITY;
-      pitch = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, pitch));
-      applyCameraRotation();
-    });
-
-    function handleResize() {
-      const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
-      renderer.setPixelRatio(dpr);
-      renderer.setSize(window.innerWidth, window.innerHeight);
-      camera.aspect = window.innerWidth / window.innerHeight;
-      camera.updateProjectionMatrix();
-    }
-
-    handleResize();
-    window.addEventListener("resize", handleResize);
-
-    const clock = new THREE.Clock();
-    const worldUp = new THREE.Vector3(0, 1, 0);
-    const inputVector = new THREE.Vector3();
-    const forwardVector = new THREE.Vector3();
-    const rightVector = new THREE.Vector3();
-    const displacement = new THREE.Vector3();
-
-    try {
-      const storedBest = localStorage.getItem(SCORE_STORAGE_KEY);
-      if (storedBest !== null) {
-        const parsedBest = Number.parseInt(storedBest, 10);
-        if (!Number.isNaN(parsedBest) && parsedBest > 0) {
-          bestScore = parsedBest;
-        }
-      }
     } catch (error) {
-      console.warn("Failed to read high score:", error);
+      console.error("Failed to enable gyroscope:", error);
+      return false;
     }
+  }
+  if (!gyroControls) {
+    gyroControls = createGyroControls();
+    gyroControls.connect();
+  }
+  gyroActive = true;
+  isGyroAvailable = true;
+  touchLookActive = false;
+  if (document.pointerLockElement) {
+    document.exitPointerLock();
+  }
+  pointerLocked = false;
+  renderer.domElement.style.cursor = "auto";
+  if (gyroPermissionEl) {
+    gyroPermissionEl.style.display = "none";
+  }
+  return true;
+}
 
-    updateScoreDisplay();
+function setupJoystick(container, stick, callback) {
+  let active = false;
+  let currentX = 0;
+  let currentY = 0;
+  const maxDistance = 45;
 
-    function updateMovement(delta) {
-      const joystickX = Math.abs(moveJoystickData.x) > 0.01 ? moveJoystickData.x : 0;
-      const joystickY = Math.abs(moveJoystickData.y) > 0.01 ? moveJoystickData.y : 0;
+  function updateStickPosition() {
+    stick.style.transform = "translate(calc(-50% + " + currentX + "px), calc(-50% + " + currentY + "px))";
+  }
 
-      inputVector.set(joystickX, 0, -joystickY);
-
-      if (inputVector.x === 0 && inputVector.z === 0) return;
-
-      if (inputVector.lengthSq() > 1) {
-        inputVector.normalize();
-      }
-
-      forwardVector.set(0, 0, -1).applyQuaternion(camera.quaternion);
-      forwardVector.y = 0;
-      if (forwardVector.lengthSq() > 0.0001) {
-        forwardVector.normalize();
-      } else {
-        forwardVector.set(0, 0, -1);
-      }
-
-      rightVector.crossVectors(forwardVector, worldUp);
-      if (rightVector.lengthSq() > 0.0001) {
-        rightVector.normalize();
-      } else {
-        rightVector.set(1, 0, 0);
-      }
-
-      displacement.copy(forwardVector).multiplyScalar(inputVector.z);
-      displacement.addScaledVector(rightVector, inputVector.x);
-
-      if (displacement.lengthSq() === 0) return;
-
-      displacement.normalize().multiplyScalar(MOVE_SPEED * delta);
-      camera.position.add(displacement);
-      camera.position.y = 1.6;
+  function handleStart(e) {
+    active = true;
+    if (e.cancelable !== false) e.preventDefault();
+    const touch = e.touches ? e.touches[0] : e;
+    const rect = container.getBoundingClientRect();
+    currentX = touch.clientX - rect.left - rect.width / 2;
+    currentY = touch.clientY - rect.top - rect.height / 2;
+    const distance = Math.sqrt(currentX * currentX + currentY * currentY);
+    if (distance > maxDistance) {
+      currentX = currentX / distance * maxDistance;
+      currentY = currentY / distance * maxDistance;
     }
+    updateStickPosition();
+    callback({ x: currentX / maxDistance, y: currentY / maxDistance });
+  }
 
-    renderer.setAnimationLoop(() => {
-      const delta = clock.getDelta();
-      if (gyroActive && gyroControls && isGyroAvailable) {
-        gyroControls.update();
-      }
-      if (roundActive) {
-        timeRemaining = Math.max(0, timeRemaining - delta);
-        if (timeRemaining <= 0) {
-          endRound();
-        } else {
-          updateScoreDisplay();
-        }
-      }
-      updateMovement(delta);
-      updateSpawning(delta);
-      updatePowerUpSpawning(delta);
-      updateBullets(delta);
-      updatePowerUps(delta);
-      updateTargets(delta);
-      updateFragments(delta);
-      updateTripleShot(delta);
-      renderer.render(scene, camera);
+  function handleMove(e) {
+    if (!active) return;
+    if (e.cancelable !== false) e.preventDefault();
+    const touch = e.touches ? e.touches[0] : e;
+    const rect = container.getBoundingClientRect();
+    currentX = touch.clientX - rect.left - rect.width / 2;
+    currentY = touch.clientY - rect.top - rect.height / 2;
+    const distance = Math.sqrt(currentX * currentX + currentY * currentY);
+    if (distance > maxDistance) {
+      currentX = currentX / distance * maxDistance;
+      currentY = currentY / distance * maxDistance;
+    }
+    updateStickPosition();
+    callback({ x: currentX / maxDistance, y: currentY / maxDistance });
+  }
+
+  function handleEnd() {
+    active = false;
+    currentX = 0;
+    currentY = 0;
+    updateStickPosition();
+    callback({ x: 0, y: 0 });
+  }
+
+  container.addEventListener("touchstart", handleStart, { passive: false });
+  document.addEventListener("touchmove", handleMove, { passive: false });
+  document.addEventListener("touchend", handleEnd);
+  document.addEventListener("touchcancel", handleEnd);
+  container.addEventListener("mousedown", handleStart);
+  document.addEventListener("mousemove", handleMove);
+  document.addEventListener("mouseup", handleEnd);
+  updateStickPosition();
+}
+
+function onTouchStartLook(event) {
+  if (!isMobile || gyroActive) return;
+  if (event.target && typeof event.target.closest === "function") {
+    if (event.target.closest("#moveJoystick") || event.target.closest("#shootButton")) {
+      return;
+    }
+  }
+  const touch = event.touches && event.touches[0];
+  if (!touch) return;
+  touchLookActive = true;
+  lastTouchX = touch.clientX;
+  lastTouchY = touch.clientY;
+  if (event.cancelable !== false) event.preventDefault();
+}
+
+function onTouchMoveLook(event) {
+  if (!touchLookActive || gyroActive) return;
+  const touch = event.touches && event.touches[0];
+  if (!touch) return;
+  const deltaX = touch.clientX - lastTouchX;
+  const deltaY = touch.clientY - lastTouchY;
+  lastTouchX = touch.clientX;
+  lastTouchY = touch.clientY;
+  yaw -= deltaX * POINTER_SENSITIVITY;
+  pitch -= deltaY * POINTER_SENSITIVITY;
+  pitch = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, pitch));
+  applyCameraRotation();
+  if (event.cancelable !== false) event.preventDefault();
+}
+
+function onTouchEndLook() {
+  touchLookActive = false;
+}
+
+if (requestGyroButton) {
+  requestGyroButton.addEventListener("click", async () => {
+    const enabled = await setupGyroscope();
+    if (!enabled && gyroPermissionEl) {
+      gyroPermissionEl.style.display = "flex";
+    }
+  });
+}
+
+if (isMobile && gyroPermissionEl && typeof DeviceOrientationEvent !== "undefined") {
+  if (typeof DeviceOrientationEvent.requestPermission === "function") {
+    gyroPermissionEl.style.display = "flex";
+  } else {
+    setupGyroscope();
+  }
+}
+
+if (isMobile) {
+  if (mobileUI) mobileUI.style.display = "block";
+  renderer.domElement.style.touchAction = "none";
+  if (moveJoystick && moveStick) {
+    setupJoystick(moveJoystick, moveStick, (data) => {
+      moveJoystickData = data;
     });
-  </script>
+  }
+}
+
+renderer.domElement.addEventListener("touchstart", onTouchStartLook, { passive: false });
+renderer.domElement.addEventListener("touchmove", onTouchMoveLook, { passive: false });
+renderer.domElement.addEventListener("touchend", onTouchEndLook);
+renderer.domElement.addEventListener("touchcancel", onTouchEndLook);
+
+document.addEventListener("mousemove", (event) => {
+  if (!pointerLocked || gyroActive) return;
+  yaw -= event.movementX * POINTER_SENSITIVITY;
+  pitch -= event.movementY * POINTER_SENSITIVITY;
+  pitch = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, pitch));
+  applyCameraRotation();
+});
+
+if (shootButton) {
+  shootButton.addEventListener("click", (event) => {
+    event.preventDefault();
+    shoot();
+  });
+  shootButton.addEventListener("touchstart", (event) => {
+    if (event.cancelable !== false) event.preventDefault();
+    shoot();
+  }, { passive: false });
+}
+
+document.addEventListener("mousedown", (event) => {
+  if (event.button === 0 && !isMobile && !gyroActive && pointerLocked) {
+    shoot();
+  }
+});
+
+renderer.domElement.addEventListener("click", () => {
+  if (gyroActive || isMobile) return;
+  if (!pointerLocked) {
+    renderer.domElement.requestPointerLock();
+  }
+});
+
+document.addEventListener("pointerlockchange", () => {
+  pointerLocked = document.pointerLockElement === renderer.domElement;
+  renderer.domElement.style.cursor = pointerLocked ? "none" : (gyroActive ? "auto" : "grab");
+});
+
+initializeBoss();
+updateHud();
+
+renderer.setAnimationLoop(() => {
+  const delta = clock.getDelta();
+  if (gyroActive && gyroControls && isGyroAvailable) {
+    gyroControls.update();
+  }
+  if (shootCooldownTimer > 0) {
+    shootCooldownTimer = Math.max(0, shootCooldownTimer - delta);
+  }
+  if (gameActive && !victoryAchieved && !defeat) {
+    attackCooldownTimer -= delta;
+    if (attackCooldownTimer <= 0) {
+      performBossAttack();
+    }
+  }
+  updateBossBehavior(delta);
+  updateMovement(delta);
+  updateBullets(delta);
+  updateBossAttacks(delta);
+  updateBossDeath(delta);
+  renderer.render(scene, camera);
+});
+
+</script>
+
 </body>
 </html>
+
+
+
+
