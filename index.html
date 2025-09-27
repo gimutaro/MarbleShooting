@@ -1020,7 +1020,7 @@ const spark = new SparkRenderer({
   renderer,
   maxStdDev: Math.sqrt(5),
   maxPixelRadius: 256,
-  clipXY: 1.2,
+  clipXY: 2.0,
   view: { stochastic: false, sortRadial: true, sortDistance: 0.01, sortCoorient: 0.995, sort32: false }
 });
 scene.add(spark);
@@ -1033,8 +1033,8 @@ const splat = new SplatMesh({
     renderer.render(scene, camera);
   }
 });
-splat.scale.setScalar(3);
-splat.position.set(0, 0, -6);
+splat.scale.setScalar(5);
+splat.position.set(0, -1.2, -8);
 splat.rotation.set(Math.PI, 0, 0);
 scene.add(splat);
 
