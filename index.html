@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="ja">
 <head>
   <meta charset="UTF-8" />
@@ -86,10 +86,10 @@ const BOSS_WEAK_POINT_RADIUS = 1.8;
 const BOSS_ATTACK_COOLDOWN_MIN = 1.2;
 const BOSS_ATTACK_COOLDOWN_MAX = 2.4;
 const BOSS_MOVE_INTERVAL = 2.8;
-const BOSS_MOVE_RADIUS_X = 32;
-const BOSS_MOVE_MIN_Z = -40;
-const BOSS_MOVE_MAX_Z = -18;
+const BOSS_ORBIT_RADIUS_MIN = 26;
+const BOSS_ORBIT_RADIUS_MAX = 42;
 const BOSS_MODEL_SCALE = 0.9;
+const BOSS_BASE_HEIGHT = 6.5;
 
 const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
 renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -161,7 +161,12 @@ let bossEnergyRings = [];
 let bossShoulders = [];
 let bossWings = [];
 let bossWeakPointGlow = 0;
-const bossTargetPosition = new THREE.Vector3(0, 6.5, -38);
+const bossTargetOffset = new THREE.Vector3(0, 0, -32);
+const bossTargetPosition = new THREE.Vector3(
+  camera.position.x + bossTargetOffset.x,
+  BOSS_BASE_HEIGHT,
+  camera.position.z + bossTargetOffset.z
+);
 
 const clock = new THREE.Clock();
 const worldUp = new THREE.Vector3(0, 1, 0);
@@ -173,6 +178,21 @@ const bulletStartPosition = new THREE.Vector3();
 const bulletDirection = new THREE.Vector3();
 const tmpVecA = new THREE.Vector3();
 const tmpVecB = new THREE.Vector3();
+
+function updateBossTargetPositionFromPlayer() {
+  bossTargetPosition.set(
+    camera.position.x + bossTargetOffset.x,
+    BOSS_BASE_HEIGHT,
+    camera.position.z + bossTargetOffset.z
+  );
+}
+
+function setBossTargetAroundPlayer() {
+  const angle = THREE.MathUtils.randFloat(0, Math.PI * 2);
+  const radius = THREE.MathUtils.randFloat(BOSS_ORBIT_RADIUS_MIN, BOSS_ORBIT_RADIUS_MAX);
+  bossTargetOffset.set(Math.sin(angle) * radius, 0, Math.cos(angle) * radius);
+  updateBossTargetPositionFromPlayer();
+}
 
 function updateHud() {
   if (!scoreDisplay) return;
@@ -468,6 +488,7 @@ function createBoss() {
 }
 
 function initializeBoss() {
+  updateBossTargetPositionFromPlayer();
   if (boss) {
     scene.remove(boss);
   }
@@ -604,12 +625,16 @@ function startBattle() {
   gameStarted = true;
   gameActive = true;
 
+  setBossTargetAroundPlayer();
+
   if (!boss) {
     initializeBoss();
   }
   if (boss) {
     boss.position.copy(bossTargetPosition);
     boss.rotation.set(0, 0, 0);
+    tmpVecA.subVectors(camera.position, boss.position);
+    boss.rotation.y = Math.atan2(tmpVecA.x, tmpVecA.z);
     boss.scale.set(1, 1, 1);
   }
 
@@ -634,8 +659,7 @@ function handleBossHit(worldPosition) {
   bossHealth = Math.max(0, bossHealth - 1);
   bossHitReaction = 1;
   bossMoveTimer = 0;
-  bossTargetPosition.x = THREE.MathUtils.randFloat(-BOSS_MOVE_RADIUS_X, BOSS_MOVE_RADIUS_X);
-  bossTargetPosition.z = THREE.MathUtils.randFloat(BOSS_MOVE_MIN_Z, BOSS_MOVE_MAX_Z);
+  setBossTargetAroundPlayer();
 
   const flash = new THREE.PointLight(0xffff80, 26, 40);
   flash.position.copy(worldPosition);
@@ -902,20 +926,32 @@ function updateBossBehavior(delta) {
   bossMoveTimer += delta;
   bossHitReaction = Math.max(0, bossHitReaction - delta * 1.5);
 
+  updateBossTargetPositionFromPlayer();
+
   if (bossMoveTimer >= BOSS_MOVE_INTERVAL) {
     bossMoveTimer = 0;
-    bossTargetPosition.x = THREE.MathUtils.randFloat(-BOSS_MOVE_RADIUS_X, BOSS_MOVE_RADIUS_X);
-    bossTargetPosition.z = THREE.MathUtils.randFloat(BOSS_MOVE_MIN_Z, BOSS_MOVE_MAX_Z);
+    setBossTargetAroundPlayer();
   }
 
   boss.position.x += (bossTargetPosition.x - boss.position.x) * delta * 2.4;
   boss.position.z += (bossTargetPosition.z - boss.position.z) * delta * 2.4;
 
-  const idleHeight = 6.5 + Math.sin(bossTime * 2.2) * 0.6;
+  const idleHeight = BOSS_BASE_HEIGHT + Math.sin(bossTime * 2.2) * 0.6;
   boss.position.y = idleHeight + bossHitReaction * 0.6;
-  boss.rotation.y = Math.sin(bossTime * 0.6) * 0.15;
-  boss.rotation.x = (bossTargetPosition.z - boss.position.z) * 0.02;
-  boss.rotation.z = -(bossTargetPosition.x - boss.position.x) * 0.02;
+
+  tmpVecA.subVectors(camera.position, boss.position);
+  const horizontalDistance = Math.hypot(tmpVecA.x, tmpVecA.z) || 0.0001;
+  const desiredYaw = Math.atan2(tmpVecA.x, tmpVecA.z);
+  const desiredPitch = Math.atan2(tmpVecA.y, horizontalDistance);
+  const orientationLerp = 1 - Math.exp(-delta * 8);
+
+  let yawDiff = desiredYaw - boss.rotation.y;
+  yawDiff = THREE.MathUtils.euclideanModulo(yawDiff + Math.PI, Math.PI * 2) - Math.PI;
+  boss.rotation.y += yawDiff * orientationLerp;
+  boss.rotation.x = THREE.MathUtils.lerp(boss.rotation.x, -desiredPitch * 0.6 + bossHitReaction * 0.12, orientationLerp);
+
+  const leanTarget = THREE.MathUtils.clamp((bossTargetPosition.x - boss.position.x) * -0.03, -0.35, 0.35);
+  boss.rotation.z = THREE.MathUtils.lerp(boss.rotation.z, leanTarget, orientationLerp);
 
   if (bossHitReaction > 0) {
     boss.position.x += Math.sin(bossTime * 42) * bossHitReaction * 1.6;
@@ -1281,6 +1317,7 @@ document.addEventListener("pointerlockchange", () => {
   renderer.domElement.style.cursor = pointerLocked ? "none" : (gyroActive ? "auto" : "grab");
 });
 
+setBossTargetAroundPlayer();
 initializeBoss();
 updateHud();
 
@@ -1310,7 +1347,4 @@ renderer.setAnimationLoop(() => {
 
 </body>
 </html>
-
-
-
 
