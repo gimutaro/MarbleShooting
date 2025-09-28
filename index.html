@@ -23,9 +23,52 @@
     #crosshair.powered .circle { border-color: rgba(173, 235, 255, 0.9); box-shadow: 0 0 8px rgba(120, 210, 255, 0.75); }
     #crosshair.flash { animation: crosshairFlash 0.2s ease-out; }
     @keyframes crosshairFlash { 0% { transform: translate(-50%, -50%) scale(1.3); } 100% { transform: translate(-50%, -50%) scale(1); } }
-    #startButton {
+    #centerDisplay {
       position: fixed;
       top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: #fff;
+      font-family: system-ui, sans-serif;
+      font-size: 4rem;
+      font-weight: bold;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      text-align: center;
+      text-shadow: 
+        0 0 10px rgba(255, 255, 255, 0.8),
+        0 0 20px rgba(255, 255, 255, 0.6),
+        0 0 30px rgba(255, 255, 255, 0.4),
+        0 0 40px rgba(255, 255, 255, 0.2);
+      z-index: 15;
+      display: none;
+      pointer-events: none;
+      animation: centerDisplayPulse 2s ease-in-out infinite;
+    }
+    #centerDisplay.victory {
+      color: #00ff88;
+      text-shadow: 
+        0 0 10px rgba(0, 255, 136, 0.8),
+        0 0 20px rgba(0, 255, 136, 0.6),
+        0 0 30px rgba(0, 255, 136, 0.4),
+        0 0 40px rgba(0, 255, 136, 0.2);
+    }
+    #centerDisplay.defeat {
+      color: #ff4444;
+      text-shadow: 
+        0 0 10px rgba(255, 68, 68, 0.8),
+        0 0 20px rgba(255, 68, 68, 0.6),
+        0 0 30px rgba(255, 68, 68, 0.4),
+        0 0 40px rgba(255, 68, 68, 0.2);
+    }
+    @keyframes centerDisplayPulse {
+      0% { transform: translate(-50%, -50%) scale(1); opacity: 0.9; }
+      50% { transform: translate(-50%, -50%) scale(1.05); opacity: 1; }
+      100% { transform: translate(-50%, -50%) scale(1); opacity: 0.9; }
+    }
+    #startButton {
+      position: fixed;
+      top: 65%;
       left: 50%;
       transform: translate(-50%, -50%);
       padding: 18px 48px;
@@ -83,6 +126,7 @@
     </div>
   </div>
   <div id="scoreDisplay">Press START to begin</div>
+  <div id="centerDisplay"></div>
   <button id="startButton">START</button>
   <div id="crosshair"><div class="circle"></div></div>
   <div id="shootButton">
@@ -108,7 +152,7 @@ const BULLET_LIFETIME = 1.6;
 const SHOOT_COOLDOWN = 0.18;
 const PLAYER_MAX_HEALTH = 5;
 const PLAYER_HIT_RADIUS = 1.3;
-const BOSS_MAX_HEALTH = 12;
+const BOSS_MAX_HEALTH = 5;
 const BOSS_WEAK_POINT_RADIUS = 1.8;
 const BOSS_ATTACK_COOLDOWN_MIN = 1.2;
 const BOSS_ATTACK_COOLDOWN_MAX = 2.4;
@@ -126,6 +170,9 @@ const BOSS_TAUNT_DURATION = 3.0;
 const BOSS_TAUNT_COOLDOWN = 4.0;
 const BOSS_TAUNT_BURST_DELAY = 0.3;
 const BOSS_TAUNT_BURST_PROJECTILES = 20;
+
+const BEAM_FORCE_ATTACK_COUNT = 3;
+const CHARGE_FORCE_ATTACK_COUNT = 6;
 
 const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
 renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -162,6 +209,7 @@ const moveStick = document.getElementById("moveStick");
 const startButton = document.getElementById("startButton");
 const shootButton = document.getElementById("shootButton");
 const scoreDisplay = document.getElementById("scoreDisplay");
+const centerDisplay = document.getElementById("centerDisplay");
 const crosshair = document.getElementById("crosshair");
 
 let gyroControls = null;
@@ -200,6 +248,8 @@ let bossTaunting = false;
 let bossTauntTimer = 0;
 let bossTauntPhase = 0;
 let bossTauntPulseTimer = 0;
+let totalBossAttacksFired = 0;
+let specialAttackUsage = { beam: false, charge: false };
 
 let boss = null;
 let bossCore = null;
@@ -260,17 +310,21 @@ function showStartButton(label) {
 function updateHud() {
   if (!scoreDisplay) return;
   if (defeat) {
-    scoreDisplay.textContent = "GAME OVER";
+    scoreDisplay.textContent = "Player HP: " + playerHealth + "/" + PLAYER_MAX_HEALTH + "  Boss HP: " + bossHealth + "/" + BOSS_MAX_HEALTH;
+    showCenterDisplay("GAME OVER", "defeat");
     return;
   }
   if (victoryAchieved) {
     scoreDisplay.textContent = "Victory! Press START to battle again";
+    showCenterDisplay("VICTORY!", "victory");
     return;
   }
   if (!gameStarted) {
     scoreDisplay.textContent = "Press START to begin";
+    hideCenterDisplay();
   } else {
     scoreDisplay.textContent = "Player HP: " + playerHealth + "/" + PLAYER_MAX_HEALTH + "  Boss HP: " + bossHealth + "/" + BOSS_MAX_HEALTH;
+    hideCenterDisplay();
   }
 }
 
@@ -278,6 +332,24 @@ function setScoreDamageFlash() {
   if (!scoreDisplay) return;
   scoreDisplay.classList.add("damage");
   setTimeout(() => scoreDisplay.classList.remove("damage"), 160);
+}
+
+function showCenterDisplay(text, type) {
+  if (!centerDisplay) return;
+  centerDisplay.textContent = text;
+  centerDisplay.className = ''; // クラスをリセット
+  if (type === 'victory') {
+    centerDisplay.classList.add('victory');
+  } else if (type === 'defeat') {
+    centerDisplay.classList.add('defeat');
+  }
+  centerDisplay.style.display = 'block';
+}
+
+function hideCenterDisplay() {
+  if (!centerDisplay) return;
+  centerDisplay.style.display = 'none';
+  centerDisplay.className = '';
 }
 
 
@@ -640,36 +712,36 @@ function restoreBossOriginalColors() {
     if (child.isMesh && child.material && child !== bossWeakPoint) {
       const material = child.material;
       
-      // ボスの各パーツの元の色を明示的に設定
+      // ?{?X??e?p?[?c?????F?????I????
       if (child.geometry instanceof THREE.OctahedronGeometry) {
         if (material.opacity === 0.7) {
-          // 外殻
+          // ?O?k
           material.color.set(0x0099ff);
           material.emissive.set(0x0066ff);
           material.emissiveIntensity = 0.2;
         } else {
-          // 内殻・その他
+          // ??k?E?????
           material.color.set(0x00ccff);
           material.emissive.set(0x0099ff);
           material.emissiveIntensity = 0.4;
         }
       } else if (child.geometry instanceof THREE.IcosahedronGeometry) {
-        // コア
+        // ?R?A
         material.color.set(0xffffff);
         material.emissive.set(0x00ffff);
         material.emissiveIntensity = 2;
       } else if (child.geometry instanceof THREE.TetrahedronGeometry) {
-        // 肩部・装飾
+        // ?????E????
         material.color.set(0x00aaff);
         material.emissive.set(0x0066ff);
         material.emissiveIntensity = 0.3;
       } else if (child.geometry instanceof THREE.ConeGeometry) {
-        // 頭部
+        // ????
         material.color.set(0x0099ff);
         material.emissive.set(0x0066ff);
         material.emissiveIntensity = 0.3;
       } else if (child.geometry instanceof THREE.SphereGeometry) {
-        // キャノン・目
+        // ?L???m???E??
         if (material.emissiveIntensity === 1) {
           material.color.set(0xff00ff);
           material.emissive.set(0xff00ff);
@@ -678,18 +750,18 @@ function restoreBossOriginalColors() {
           material.color.set(0xffffff);
         }
       } else if (child.geometry instanceof THREE.BoxGeometry) {
-        // ウィング
+        // ?E?B???O
         material.color.set(0x00ffff);
         material.emissive.set(0x00ffff);
         material.emissiveIntensity = 1.2;
       } else if (child.geometry instanceof THREE.TorusGeometry) {
-        // エネルギーリング
+        // ?G?l???M?[?????O
         material.color.set(0x00ffff);
         material.emissive.set(0x00ffff);
         material.emissiveIntensity = 1;
       }
       
-      // userDataをクリア
+      // userData??N???A
       if (material.userData) {
         delete material.userData.originalEmissive;
         delete material.userData.originalEmissiveIntensity;
@@ -700,9 +772,9 @@ function restoreBossOriginalColors() {
 }
 
 function flashBoss() {
-  if (!boss || bossTaunting) return; // 挑発中は点滅しない
+  if (!boss || bossTaunting) return; // ????????_??????
   
-  // 複数回の点滅エフェクト
+  // ???????_??G?t?F?N?g
   const flashSequence = [
     { delay: 0, intensity: 0.8, duration: 100 },
     { delay: 150, intensity: 0.6, duration: 100 },
@@ -728,7 +800,7 @@ function flashBoss() {
             material.userData.originalEmissive = material.emissive.clone();
           }
           
-          // より強い赤色で点滅
+          // ???????F??_??
           material.color.lerp(flashColor, flash.intensity);
           if (material.emissive) {
             material.emissive.lerp(flashEmissive, flash.intensity * 1.5);
@@ -746,7 +818,7 @@ function flashBoss() {
 
 function spawnBossHitEffect(worldPosition) {
   const center = worldPosition.clone();
-  const bossReference = boss; // ボスの参照を保存
+  const bossReference = boss; // ?{?X??Q?????
 
   const ring = new THREE.Mesh(
     new THREE.RingGeometry(1.5, 3.5, 72, 1),
@@ -924,22 +996,22 @@ function updateBossHitEffects(delta) {
     const lifeRatio = Math.max(effect.life, 0) / effect.maxLife;
     const progress = 1 - lifeRatio;
 
-    // ボスが停止中の場合のみ位置に追従
+    // ?{?X????~?????????u???]
     if (effect.bossReference && effect.bossReference.position && bossStunned) {
       const newCenter = effect.bossReference.position.clone().add(effect.offsetFromBoss);
       effect.center.copy(newCenter);
       
-      // エフェクトの位置を更新
+      // ?G?t?F?N?g???u??X?V
       if (effect.ring) effect.ring.position.copy(newCenter);
       if (effect.backRing) effect.backRing.position.copy(newCenter);
       if (effect.glow) effect.glow.position.copy(newCenter);
       if (effect.core) effect.core.position.copy(newCenter);
       if (effect.light) effect.light.position.copy(newCenter);
       
-      // スパークの位置は移動するので、初期位置のみ更新
-      // スパークは既に移動しているので、位置をリセットしない
+      // ?X?p?[?N???u??????????A??????u???X?V
+      // ?X?p?[?N????????????????A??u????Z?b?g?????
       
-      // アークの位置を更新
+      // ?A?[?N???u??X?V
       if (effect.arcs) {
         effect.arcs.forEach((arcData) => {
           if (arcData.line) {
@@ -948,8 +1020,8 @@ function updateBossHitEffects(delta) {
         });
       }
       
-      // パーティクルの位置は移動するので、初期位置のみ更新
-      // パーティクルは既に移動しているので、位置をリセットしない
+      // ?p?[?e?B?N?????u??????????A??????u???X?V
+      // ?p?[?e?B?N??????????????????A??u????Z?b?g?????
     }
 
     if (effect.ring) {
@@ -1145,13 +1217,17 @@ function startBattle() {
   bossTauntTimer = 0;
   bossTauntPhase = 0;
   bossTauntPulseTimer = 0;
+  totalBossAttacksFired = 0;
+  specialAttackUsage.beam = false;
+  specialAttackUsage.charge = false;
   victoryAchieved = false;
   defeat = false;
   gameStarted = true;
   gameActive = true;
   hideStartButton();
+  hideCenterDisplay();
   
-  // ボスの色をリセット（前回のゲームの挑発状態をクリア）
+  // ?{?X??F????Z?b?g?i?O???Q?[???????????N???A?j
   restoreBossOriginalColors();
 
   setBossTargetAroundPlayer();
@@ -1187,7 +1263,7 @@ function applyPlayerDamage(amount) {
 function handleBossHit(worldPosition) {
   if (!gameActive || victoryAchieved || !bossWeakPoint || bossStunned) return;
   
-  // ボスを停止状態にする
+  // ?{?X???~???????
   bossStunned = true;
   bossStunTimer = bossStunDuration;
   bossFlashTimer = bossFlashDuration;
@@ -1195,7 +1271,7 @@ function handleBossHit(worldPosition) {
   bossHealth = Math.max(0, bossHealth - 1);
   bossHitReaction = 1;
   bossMoveTimer = 0;
-  // 停止中は移動しないので、setBossTargetAroundPlayer()を呼ばない
+  // ??~??????????????AsetBossTargetAroundPlayer()??????
 
   const flash = new THREE.PointLight(0xffff80, 26, 40);
   flash.position.copy(worldPosition);
@@ -1375,90 +1451,8 @@ function shootFocusedVolley() {
   setTimeout(() => scene.remove(burst), 220);
 }
 
-function shootCrystalSpread() {
-  if (!boss) return;
-  const origin = new THREE.Vector3(boss.position.x, boss.position.y + 4.8, boss.position.z);
-  for (let i = -2; i <= 2; i++) {
-    const shard = new THREE.Mesh(
-      new THREE.OctahedronGeometry(0.7, 0),
-      new THREE.MeshBasicMaterial({ color: 0xffaa44, transparent: true, opacity: 0.85 })
-    );
-    shard.position.copy(origin);
-    tmpVecA.subVectors(camera.position, origin).normalize();
-    tmpVecA.applyAxisAngle(worldUp, THREE.MathUtils.degToRad(i * 4.5));
-    tmpVecA.y += THREE.MathUtils.randFloat(-0.08, 0.08);
-    tmpVecA.normalize();
-    registerBossAttack(shard, tmpVecA.multiplyScalar(20 + Math.abs(i) * 2), {
-      life: 3.6,
-      spin: new THREE.Vector3(
-        THREE.MathUtils.randFloat(-4, 4),
-        THREE.MathUtils.randFloat(-4, 4),
-        THREE.MathUtils.randFloat(-4, 4)
-      )
-    });
-  }
-}
 
-function shootRadialVolley() {
-  if (!boss) return;
-  const origin = new THREE.Vector3(boss.position.x, boss.position.y + 3.6, boss.position.z);
-  const count = 16;
-  for (let i = 0; i < count; i++) {
-    const angle = (i / count) * Math.PI * 2;
-    const bolt = new THREE.Mesh(
-      new THREE.SphereGeometry(0.6, 12, 12),
-      new THREE.MeshBasicMaterial({ color: 0x44ffee, transparent: true, opacity: 0.75 })
-    );
-    bolt.position.copy(origin);
-    const dir = new THREE.Vector3(
-      Math.cos(angle),
-      THREE.MathUtils.randFloat(-0.15, 0.15),
-      Math.sin(angle)
-    );
-    registerBossAttack(bolt, dir.normalize().multiplyScalar(18), {
-      life: 4.5,
-      spin: new THREE.Vector3(
-        THREE.MathUtils.randFloat(-2, 2),
-        THREE.MathUtils.randFloat(-2, 2),
-        THREE.MathUtils.randFloat(-2, 2)
-      )
-    });
-  }
-  const ringLight = new THREE.PointLight(0x33ffee, 18, 32);
-  ringLight.position.copy(origin);
-  scene.add(ringLight);
-  setTimeout(() => scene.remove(ringLight), 320);
-}
 
-function shootHomingShards() {
-  if (!boss) return;
-  const origin = new THREE.Vector3(boss.position.x, boss.position.y + 3.2, boss.position.z);
-  for (let i = 0; i < 5; i++) {
-    const shard = new THREE.Mesh(
-      new THREE.TetrahedronGeometry(0.9, 0),
-      new THREE.MeshBasicMaterial({ color: 0xffff66, transparent: true, opacity: 0.85 })
-    );
-    shard.position.copy(origin);
-    const dir = new THREE.Vector3(
-      THREE.MathUtils.randFloatSpread(0.6),
-      THREE.MathUtils.randFloat(-0.1, 0.4),
-      THREE.MathUtils.randFloatSpread(0.6)
-    ).normalize();
-    registerBossAttack(shard, dir.multiplyScalar(12), {
-      life: 5,
-      spin: new THREE.Vector3(
-        THREE.MathUtils.randFloat(-5, 5),
-        THREE.MathUtils.randFloat(-5, 5),
-        THREE.MathUtils.randFloat(-5, 5)
-      ),
-      homing: true
-    });
-  }
-  const glow = new THREE.PointLight(0xffff66, 12, 28);
-  glow.position.copy(origin);
-  scene.add(glow);
-  setTimeout(() => scene.remove(glow), 260);
-}
 
 function launchSingleStrike() {
   if (!boss) return;
@@ -1486,66 +1480,7 @@ function launchSingleStrike() {
   setTimeout(() => scene.remove(light), 240);
 }
 
-function launchTripleScatter() {
-  if (!boss) return;
-  for (let i = 0; i < 3; i++) {
-    setTimeout(() => {
-      if (!boss || !gameActive || victoryAchieved || defeat) return;
-      const muzzle = new THREE.Vector3(boss.position.x, boss.position.y + 6.2, boss.position.z);
-      const bolt = new THREE.Mesh(
-        new THREE.ConeGeometry(0.6, 2.2, 14),
-        new THREE.MeshBasicMaterial({ color: 0xff8800, transparent: true, opacity: 0.95 })
-      );
-      bolt.position.copy(muzzle);
-      const direction = new THREE.Vector3();
-      direction.subVectors(camera.position, muzzle).normalize();
-      direction.x += THREE.MathUtils.randFloatSpread(0.3);
-      direction.y += THREE.MathUtils.randFloatSpread(0.2);
-      direction.normalize();
-      const velocity = direction.multiplyScalar(24);
-      bolt.lookAt(camera.position);
-      bolt.rotateX(Math.PI / 2);
-      registerBossAttack(bolt, velocity, {
-        life: 4.2,
-        alignToVelocity: true,
-        spin: new THREE.Vector3(
-          THREE.MathUtils.randFloat(-1.2, 1.2),
-          THREE.MathUtils.randFloat(-0.6, 0.6),
-          THREE.MathUtils.randFloat(-1.2, 1.2)
-        )
-      });
-    }, i * 160);
-  }
-  return { cooldown: THREE.MathUtils.randFloat(1.2, 1.8) };
-}
 
-function launchCircularBarrage() {
-  if (!boss) return;
-  const origin = new THREE.Vector3(boss.position.x, boss.position.y + 4.8, boss.position.z);
-  const bulletCount = 12;
-  for (let i = 0; i < bulletCount; i++) {
-    const angle = (i / bulletCount) * Math.PI * 2;
-    const shard = new THREE.Mesh(
-      new THREE.OctahedronGeometry(0.6, 0),
-      new THREE.MeshBasicMaterial({ color: 0x00ff99, transparent: true, opacity: 0.85 })
-    );
-    shard.position.copy(origin);
-    const direction = new THREE.Vector3(Math.cos(angle), 0, Math.sin(angle));
-    registerBossAttack(shard, direction.multiplyScalar(18), {
-      life: 5,
-      spin: new THREE.Vector3(
-        THREE.MathUtils.randFloat(-2, 2),
-        THREE.MathUtils.randFloat(-2, 2),
-        THREE.MathUtils.randFloat(-2, 2)
-      )
-    });
-  }
-  const light = new THREE.PointLight(0x00ff99, 16, 32);
-  light.position.copy(origin);
-  scene.add(light);
-  setTimeout(() => scene.remove(light), 300);
-  return { cooldown: THREE.MathUtils.randFloat(1.1, 1.6) };
-}
 
 function launchPiercingLaser() {
   if (!boss) return;
@@ -1567,7 +1502,7 @@ function launchPiercingLaser() {
     life: 3.2,
     alignToVelocity: true,
     speedDamping: 0.06,
-    damage: 2,
+    damage: 1,
     onUpdate: (attack) => {
       if (attack.mesh.material && attack.mesh.material.opacity !== undefined) {
         attack.mesh.material.opacity = Math.max(0.25, attack.life / 3.2);
@@ -1629,72 +1564,7 @@ function launchBattleStyleSingle() {
   return { cooldown: THREE.MathUtils.randFloat(1.0, 1.5) };
 }
 
-function launchBattleStyleTriple() {
-  if (!boss) return;
-  const origin = new THREE.Vector3(boss.position.x, boss.position.y + 8, boss.position.z);
-  for (let i = 0; i < 3; i++) {
-    setTimeout(() => {
-      if (!boss || !gameActive || victoryAchieved || defeat) return;
-      const projectile = new THREE.Mesh(
-        new THREE.ConeGeometry(0.5, 2, 8),
-        new THREE.MeshBasicMaterial({ 
-          color: 0xff8800, 
-          transparent: true, 
-          opacity: 0.9 
-        })
-      );
-      projectile.position.copy(origin);
-      const direction = new THREE.Vector3();
-      direction.subVectors(camera.position, origin).normalize();
-      direction.x += (Math.random() - 0.5) * 0.3;
-      direction.normalize();
-      const velocity = direction.multiplyScalar(25);
-      projectile.lookAt(camera.position);
-      registerBossAttack(projectile, velocity, {
-        life: 4,
-        alignToVelocity: true,
-        spin: new THREE.Vector3(
-          THREE.MathUtils.randFloat(-2, 2),
-          THREE.MathUtils.randFloat(-1, 1),
-          THREE.MathUtils.randFloat(-2, 2)
-        )
-      });
-    }, i * 200);
-  }
-  return { cooldown: THREE.MathUtils.randFloat(1.2, 1.8) };
-}
 
-function launchBattleStyleCircular() {
-  if (!boss) return;
-  const origin = new THREE.Vector3(boss.position.x, boss.position.y + 5, boss.position.z);
-  const bulletCount = 12;
-  for (let i = 0; i < bulletCount; i++) {
-    const angle = (i / bulletCount) * Math.PI * 2;
-    const projectile = new THREE.Mesh(
-      new THREE.OctahedronGeometry(0.6, 0),
-      new THREE.MeshBasicMaterial({ 
-        color: 0x00ff00, 
-        transparent: true, 
-        opacity: 0.8 
-      })
-    );
-    projectile.position.copy(origin);
-    const direction = new THREE.Vector3(Math.cos(angle), 0, Math.sin(angle));
-    registerBossAttack(projectile, direction.multiplyScalar(15), {
-      life: 5,
-      spin: new THREE.Vector3(
-        THREE.MathUtils.randFloat(-2, 2),
-        THREE.MathUtils.randFloat(-2, 2),
-        THREE.MathUtils.randFloat(-2, 2)
-      )
-    });
-  }
-  const light = new THREE.PointLight(0x00ff00, 20, 30);
-  light.position.copy(origin);
-  scene.add(light);
-  setTimeout(() => scene.remove(light), 300);
-  return { cooldown: THREE.MathUtils.randFloat(1.5, 2.0) };
-}
 
 function launchBattleStyleLaser() {
   if (!boss) return;
@@ -1720,7 +1590,7 @@ function launchBattleStyleLaser() {
     life: 3.2,
     alignToVelocity: true,
     speedDamping: 0.06,
-    damage: 2,
+    damage: 1,
     onUpdate: (attack) => {
       if (attack.mesh.material && attack.mesh.material.opacity !== undefined) {
         attack.mesh.material.opacity = Math.max(0.25, attack.life / 3.2);
@@ -1781,40 +1651,6 @@ function launchBattleStyleTaunt() {
 }
 
 // Additional advanced attack patterns
-function launchAdvancedHoming() {
-  if (!boss) return;
-  const origin = new THREE.Vector3(boss.position.x, boss.position.y + 3.2, boss.position.z);
-  for (let i = 0; i < 5; i++) {
-    const projectile = new THREE.Mesh(
-      new THREE.TetrahedronGeometry(0.9, 0),
-      new THREE.MeshBasicMaterial({ 
-        color: 0xffff66, 
-        transparent: true, 
-        opacity: 0.85 
-      })
-    );
-    projectile.position.copy(origin);
-    const dir = new THREE.Vector3(
-      THREE.MathUtils.randFloatSpread(0.6),
-      THREE.MathUtils.randFloat(-0.1, 0.4),
-      THREE.MathUtils.randFloatSpread(0.6)
-    ).normalize();
-    registerBossAttack(projectile, dir.multiplyScalar(12), {
-      life: 5,
-      spin: new THREE.Vector3(
-        THREE.MathUtils.randFloat(-5, 5),
-        THREE.MathUtils.randFloat(-5, 5),
-        THREE.MathUtils.randFloat(-5, 5)
-      ),
-      homing: true
-    });
-  }
-  const glow = new THREE.PointLight(0xffff66, 12, 28);
-  glow.position.copy(origin);
-  scene.add(glow);
-  setTimeout(() => scene.remove(glow), 260);
-  return { cooldown: THREE.MathUtils.randFloat(1.8, 2.2) };
-}
 
 function launchSpeedVariableAttack() {
   if (!boss) return;
@@ -1855,86 +1691,7 @@ function launchSpeedVariableAttack() {
   return { cooldown: THREE.MathUtils.randFloat(1.6, 2.1) };
 }
 
-function launchSpiralBarrage() {
-  if (!boss) return;
-  const origin = new THREE.Vector3(boss.position.x, boss.position.y + 6, boss.position.z);
-  let spiralAngle = 0;
-  for (let i = 0; i < 15; i++) {
-    setTimeout(() => {
-      if (!boss || !gameActive || victoryAchieved || defeat) return;
-      const projectile = new THREE.Mesh(
-        new THREE.OctahedronGeometry(0.5, 0),
-        new THREE.MeshBasicMaterial({ 
-          color: 0x00ccff, 
-          transparent: true, 
-          opacity: 0.8 
-        })
-      );
-      projectile.position.copy(origin);
-      const radius = 0.8 + (i * 0.1);
-      const direction = new THREE.Vector3(
-        Math.cos(spiralAngle) * radius,
-        -0.2,
-        Math.sin(spiralAngle) * radius
-      ).normalize();
-      registerBossAttack(projectile, direction.multiplyScalar(22), {
-        life: 4.2,
-        spin: new THREE.Vector3(
-          THREE.MathUtils.randFloat(-6, 6),
-          THREE.MathUtils.randFloat(-6, 6),
-          THREE.MathUtils.randFloat(-6, 6)
-        )
-      });
-      spiralAngle += 0.8;
-    }, i * 100);
-  }
-  return { cooldown: THREE.MathUtils.randFloat(2.2, 2.8) };
-}
 
-function launchWaveAttack() {
-  if (!boss) return;
-  const origin = new THREE.Vector3(boss.position.x, boss.position.y + 2, boss.position.z);
-  for (let wave = 0; wave < 3; wave++) {
-    setTimeout(() => {
-      if (!boss || !gameActive || victoryAchieved || defeat) return;
-      const waveCount = 8;
-      for (let i = 0; i < waveCount; i++) {
-        const angle = (i / waveCount) * Math.PI * 2;
-        const projectile = new THREE.Mesh(
-          new THREE.SphereGeometry(0.7, 10, 10),
-          new THREE.MeshBasicMaterial({ 
-            color: wave === 0 ? 0xff0088 : wave === 1 ? 0x8800ff : 0x0088ff, 
-            transparent: true, 
-            opacity: 0.85 
-          })
-        );
-        projectile.position.copy(origin);
-        const direction = new THREE.Vector3(
-          Math.cos(angle + wave * 0.3),
-          0,
-          Math.sin(angle + wave * 0.3)
-        );
-        const speed = 18 - wave * 2;
-        registerBossAttack(projectile, direction.multiplyScalar(speed), {
-          life: 4.5,
-          spin: new THREE.Vector3(
-            THREE.MathUtils.randFloat(-3, 3),
-            THREE.MathUtils.randFloat(-3, 3),
-            THREE.MathUtils.randFloat(-3, 3)
-          )
-        });
-      }
-      const waveLight = new THREE.PointLight(
-        wave === 0 ? 0xff0088 : wave === 1 ? 0x8800ff : 0x0088ff, 
-        20, 35
-      );
-      waveLight.position.copy(origin);
-      scene.add(waveLight);
-      setTimeout(() => scene.remove(waveLight), 250);
-    }, wave * 600);
-  }
-  return { cooldown: THREE.MathUtils.randFloat(2.5, 3.2) };
-}
 
 function spawnTauntParticles(count = 48) {
   if (!boss) return;
@@ -1961,50 +1718,192 @@ function spawnTauntParticles(count = 48) {
   }
 }
 
+// ?V?????U???p?^?[??: ?r?[???U??
+function launchContinuousBeam() {
+  console.log("launchContinuousBeam called!");
+  if (!boss) return;
+  const origin = new THREE.Vector3(boss.position.x, boss.position.y + 3, boss.position.z);
+  
+  // ?v???C???[??????v?Z
+  const direction = new THREE.Vector3();
+  direction.subVectors(camera.position, origin).normalize();
+  
+  // ?r?[???{????
+  const beamGeometry = new THREE.CylinderGeometry(0.8, 0.8, 60, 8);
+  const beamMaterial = new THREE.MeshBasicMaterial({
+    color: 0x00ffff,
+    transparent: true,
+    opacity: 0.8,
+    side: THREE.DoubleSide
+  });
+  const beam = new THREE.Mesh(beamGeometry, beamMaterial);
+  beam.position.copy(origin);
+  
+  // ?r?[????v???C???[???????????
+  const quaternion = new THREE.Quaternion();
+  quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
+  beam.quaternion.copy(quaternion);
+  
+  scene.add(beam);
+  
+  // ?r?[???????G?t?F?N?g
+  const beamLight = new THREE.PointLight(0x00ffff, 30, 50);
+  beamLight.position.copy(origin);
+  scene.add(beamLight);
+  
+  // ?r?[?????????x
+  const velocity = direction.clone().multiplyScalar(25);
+  
+  // ?r?[???U???????o?^
+  registerBossAttack(beam, velocity, {
+    life: 3.0,
+    damage: 1,
+    onUpdate: (attack) => {
+      // ?r?[????????x????X???????
+      if (attack.mesh.material && attack.mesh.material.opacity !== undefined) {
+        attack.mesh.material.opacity = Math.max(0.3, attack.life / 3.0 * 0.8);
+      }
+      // ???C?g???????
+      beamLight.position.copy(attack.mesh.position);
+    },
+    cleanup: () => {
+      scene.remove(beamLight);
+    }
+  });
+  
+  return { cooldown: THREE.MathUtils.randFloat(2.5, 3.5) };
+}
+
+// ?V?????U???p?^?[??: ??i?U??
+function launchChargeAttack() {
+  console.log("launchChargeAttack called!");
+  if (!boss) return;
+  
+  // ??i??????G?t?F?N?g
+  const chargeLight = new THREE.PointLight(0xff4400, 25, 40);
+  chargeLight.position.copy(boss.position);
+  scene.add(chargeLight);
+  
+  // 0.8?b????i?J?n
+  setTimeout(() => {
+    if (!boss || !gameActive || victoryAchieved || defeat) {
+      scene.remove(chargeLight);
+      return;
+    }
+    
+    // ??i????
+    const chargeBody = new THREE.Mesh(
+      new THREE.BoxGeometry(4, 6, 8),
+      new THREE.MeshBasicMaterial({
+        color: 0xff4400,
+        transparent: true,
+        opacity: 0.9
+      })
+    );
+    chargeBody.position.copy(boss.position);
+    
+    // ?v???C???[????????i??????v?Z
+    const direction = new THREE.Vector3();
+    direction.subVectors(camera.position, boss.position).normalize();
+    
+    // ??i???x
+    const velocity = direction.multiplyScalar(35);
+    
+    // ??i?U???????o?^
+    registerBossAttack(chargeBody, velocity, {
+      life: 2.5,
+      damage: 1,
+      spin: new THREE.Vector3(0, 0, THREE.MathUtils.randFloat(-2, 2)),
+      onUpdate: (attack) => {
+        // ??i????G?t?F?N?g
+        chargeLight.position.copy(attack.mesh.position);
+        
+        // ?????x????X???????
+        if (attack.mesh.material && attack.mesh.material.opacity !== undefined) {
+          attack.mesh.material.opacity = Math.max(0.4, attack.life / 2.5 * 0.9);
+        }
+      },
+      cleanup: () => {
+        scene.remove(chargeLight);
+      }
+    });
+    
+  }, 800);
+  
+  // ?????G?t?F?N?g??N???[???A?b?v
+  setTimeout(() => {
+    if (chargeLight.parent) {
+      scene.remove(chargeLight);
+    }
+  }, 4000);
+  
+  return { cooldown: THREE.MathUtils.randFloat(3.0, 4.0) };
+}
+
 const bossAttackBehaviors = [
   launchSingleStrike,
-  launchTripleScatter,
-  launchCircularBarrage,
   launchPiercingLaser,
   startTauntSequence,
   shootFocusedVolley,
-  shootCrystalSpread,
-  shootRadialVolley,
-  shootHomingShards,
   // Battle.html style attacks
   launchBattleStyleSingle,
-  launchBattleStyleTriple,
-  launchBattleStyleCircular,
   launchBattleStyleLaser,
   launchBattleStyleTaunt,
   // Advanced attack patterns
-  launchAdvancedHoming,
   launchSpeedVariableAttack,
-  launchSpiralBarrage,
-  launchWaveAttack
+  // New attack types
+  launchContinuousBeam,
+  launchChargeAttack
 ];
+
+// ?f?o?b?O?p?F?U???z????e??m?F
+console.log("Boss attack behaviors:", bossAttackBehaviors.map((fn, i) => `${i}: ${fn.name}`));
 
 function performBossAttack() {
   if (!gameActive || victoryAchieved || defeat || bossStunned || bossTaunting) return;
   if (bossAttackBehaviors.length === 0) return;
-  
-  // Mix sequential and random selection for more variety
-  let index;
-  if (Math.random() < 0.7) {
-    // 70% chance for sequential pattern
-    index = bossAttackPattern % bossAttackBehaviors.length;
-    bossAttackPattern = (index + 1) % bossAttackBehaviors.length;
+
+  let attackFn = null;
+  let attackIndex = null;
+  let forcedAttackKey = null;
+
+  if (!specialAttackUsage.beam && totalBossAttacksFired >= BEAM_FORCE_ATTACK_COUNT) {
+    attackFn = launchContinuousBeam;
+    forcedAttackKey = "beam";
+  } else if (!specialAttackUsage.charge && specialAttackUsage.beam && totalBossAttacksFired >= CHARGE_FORCE_ATTACK_COUNT) {
+    attackFn = launchChargeAttack;
+    forcedAttackKey = "charge";
   } else {
-    // 30% chance for random selection
-    index = Math.floor(Math.random() * bossAttackBehaviors.length);
+    if (Math.random() < 0.7) {
+      attackIndex = bossAttackPattern % bossAttackBehaviors.length;
+      bossAttackPattern = (attackIndex + 1) % bossAttackBehaviors.length;
+    } else {
+      attackIndex = Math.floor(Math.random() * bossAttackBehaviors.length);
+    }
+
+    attackFn = bossAttackBehaviors[attackIndex];
+    if (typeof attackFn !== "function") {
+      bossAttackPattern = 0;
+      return;
+    }
   }
-  
-  const attackFn = bossAttackBehaviors[index];
-  if (typeof attackFn !== "function") {
-    bossAttackPattern = 0;
-    return;
-  }
+
+  const debugSuffix = attackIndex !== null
+    ? `(index: ${attackIndex})`
+    : forcedAttackKey
+      ? `(forced: ${forcedAttackKey})`
+      : "";
+  console.log(`Boss attack: ${attackFn.name} ${debugSuffix}`.trim());
+
   const result = attackFn();
+  totalBossAttacksFired += 1;
+
+  if (attackFn === launchContinuousBeam) {
+    specialAttackUsage.beam = true;
+  } else if (attackFn === launchChargeAttack) {
+    specialAttackUsage.charge = true;
+  }
+
   const nextCooldown = result && typeof result.cooldown === "number"
     ? result.cooldown
     : THREE.MathUtils.randFloat(BOSS_ATTACK_COOLDOWN_MIN, BOSS_ATTACK_COOLDOWN_MAX);
@@ -2018,42 +1917,42 @@ function updateBossBehavior(delta) {
   bossMoveTimer += delta;
   bossHitReaction = Math.max(0, bossHitReaction - delta * 1.5);
 
-  // 挑発状態の管理
+  // ??????????
   if (bossTaunting) {
     bossTauntTimer -= delta;
     
-    // 挑発フェーズの管理
+    // ?????t?F?[?Y????
     if (bossTauntTimer > 2.0) {
-      bossTauntPhase = 0; // 笑い始め
+      bossTauntPhase = 0; // ????n??
     } else if (bossTauntTimer > 1.0) {
-      bossTauntPhase = 1; // 激しく笑う
+      bossTauntPhase = 1; // ?????????
     } else {
-      bossTauntPhase = 2; // 笑い終わり
+      bossTauntPhase = 2; // ????I???
     }
     
-    // 笑っているような動き
+    // ??????????????
     const laughIntensity = bossTauntPhase === 1 ? 2.0 : 1.0;
     const laughSpeed = bossTauntPhase === 1 ? 15.0 : 8.0;
     
-    // 上下に激しく揺れる
+    // ??????????h???
     boss.position.y = BOSS_BASE_HEIGHT + Math.sin(bossTime * laughSpeed) * laughIntensity * 2;
     
-    // 前後に揺れる（お辞儀するような動き）
+    // ?O???h???i?????V???????????j
     boss.rotation.x = Math.sin(bossTime * laughSpeed * 0.7) * 0.3 * laughIntensity;
     
-    // 左右に揺れる
+    // ???E??h???
     boss.rotation.z = Math.sin(bossTime * laughSpeed * 0.5) * 0.2 * laughIntensity;
     
-    // サイズを脈動させる
+    // ?T?C?Y??????????
     const scaleEffect = 1 + Math.sin(bossTime * laughSpeed * 0.8) * 0.1 * laughIntensity;
     boss.scale.set(scaleEffect, scaleEffect, scaleEffect);
     
-    // ボスを黄色く光らせる
+    // ?{?X????F?????�_??
     boss.traverse((child) => {
       if (child.isMesh && child.material && child !== bossWeakPoint) {
         if (!child.material.userData) child.material.userData = {};
         
-        // 初回のみ元の色を保存
+        // ?????????F????
         if (!child.material.userData.originalEmissive) {
           child.material.userData.originalEmissive = child.material.emissive ? child.material.emissive.clone() : new THREE.Color(0x000000);
           child.material.userData.originalEmissiveIntensity = child.material.emissiveIntensity || 0.5;
@@ -2061,7 +1960,7 @@ function updateBossBehavior(delta) {
         }
         
         if (child.material.emissive) {
-          // 元の色と黄色をブレンド
+          // ????F????F??u?????h
           const originalEmissive = child.material.userData.originalEmissive;
           const glowColor = new THREE.Color(0xffff00);
           child.material.emissive.copy(originalEmissive).lerp(glowColor, 0.6 * laughIntensity);
@@ -2070,7 +1969,7 @@ function updateBossBehavior(delta) {
       }
     });
     
-    // 挑発中に小さな光のパーティクルを放出
+    // ????????????????p?[?e?B?N??????o
     if (Math.random() < 0.1) {
       const spark = new THREE.Mesh(
         new THREE.SphereGeometry(0.2, 8, 8),
@@ -2088,7 +1987,7 @@ function updateBossBehavior(delta) {
       setTimeout(() => scene.remove(spark), 500);
     }
     
-    // 挑発終了
+    // ?????I??
     if (bossTauntTimer <= 0) {
       bossTaunting = false;
       bossTauntTimer = 0;
@@ -2096,41 +1995,41 @@ function updateBossBehavior(delta) {
       bossTauntPulseTimer = 0;
       boss.scale.set(1, 1, 1);
       
-      // 色を元に戻す - より確実な方法
+      // ?F??????? - ???m??????@
       restoreBossOriginalColors();
       
-      // 挑発後の強力な攻撃
+      // ???????????U??
       setTimeout(() => {
         if (gameActive && !bossTaunting && !victoryAchieved && !defeat) {
-          // 全方向弾幕攻撃
+          // ?S?????e???U??
           const bulletCount = 20;
           const burstOrigin = new THREE.Vector3(boss.position.x, boss.position.y + 5, boss.position.z);
           for (let i = 0; i < bulletCount; i++) {
             const angle = (i / bulletCount) * Math.PI * 2;
             const burstProjectile = new THREE.Mesh(
-              new THREE.SphereGeometry(1.2, 16, 16),
+              new THREE.SphereGeometry(0.8, 12, 12),
               new THREE.MeshBasicMaterial({
-                color: 0xff00ff,
+                color: 0xff0066,
                 transparent: true,
-                opacity: 0.9
+                opacity: 0.85
               })
             );
             burstProjectile.position.copy(burstOrigin);
             const direction = new THREE.Vector3(
               Math.cos(angle),
-              (Math.random() - 0.5) * 0.5,
+              (Math.random() - 0.5) * 0.3,
               Math.sin(angle)
             );
-            registerBossAttack(burstProjectile, direction.multiplyScalar(20), {
-              life: 4.5,
+            registerBossAttack(burstProjectile, direction.multiplyScalar(22), {
+              life: 5,
               spin: new THREE.Vector3(
-                THREE.MathUtils.randFloat(-3, 3),
-                THREE.MathUtils.randFloat(-3, 3),
-                THREE.MathUtils.randFloat(-3, 3)
+                THREE.MathUtils.randFloat(-2, 2),
+                THREE.MathUtils.randFloat(-2, 2),
+                THREE.MathUtils.randFloat(-2, 2)
               )
             });
           }
-          const burstLight = new THREE.PointLight(0xff00ff, 40, 50);
+          const burstLight = new THREE.PointLight(0xff0066, 40, 50);
           burstLight.position.copy(burstOrigin);
           scene.add(burstLight);
           setTimeout(() => scene.remove(burstLight), 500);
@@ -2139,12 +2038,12 @@ function updateBossBehavior(delta) {
     }
   }
 
-  // 停止状態の管理
+  // ??~??????
   if (bossStunned) {
     bossStunTimer -= delta;
     bossFlashTimer -= delta;
     
-    // 点滅エフェクトの管理
+    // ?_??G?t?F?N?g????
     if (bossFlashTimer > 0) {
       const flashIntensity = Math.sin(bossFlashTimer * 20) * 0.5 + 0.5;
       const flashColor = new THREE.Color(0xff0000);
@@ -2161,7 +2060,7 @@ function updateBossBehavior(delta) {
             material.userData.originalEmissive = material.emissive.clone();
           }
           
-          // 連続的な点滅
+          // ?A???I??_??
           material.color.lerp(flashColor, flashIntensity * 0.6);
           if (material.emissive) {
             material.emissive.lerp(flashEmissive, flashIntensity * 0.8);
@@ -2169,19 +2068,19 @@ function updateBossBehavior(delta) {
         }
       });
     } else {
-      // 点滅が終わったら元の色に戻す
+      // ?_????I?????????F????
       restoreBossOriginalColors();
     }
     
     if (bossStunTimer <= 0) {
       bossStunned = false;
-      // 停止が終わったら新しい位置を設定
+      // ??~???I???????V??????u????
       setBossTargetAroundPlayer();
     }
-    // 停止中は移動しないが、アニメーションは続ける
-    // アニメーション部分は下に移動
+    // ??~??????????????A?A?j???[?V???????????
+    // ?A?j???[?V???????????????
   } else if (!bossTaunting) {
-    // 通常時のみ移動処理（挑発中は移動しない）
+    // ?????????????i????????????????j
     updateBossTargetPositionFromPlayer();
 
     if (bossMoveTimer >= BOSS_MOVE_INTERVAL) {
@@ -2192,12 +2091,12 @@ function updateBossBehavior(delta) {
     boss.position.x += (bossTargetPosition.x - boss.position.x) * delta * 2.4;
     boss.position.z += (bossTargetPosition.z - boss.position.z) * delta * 2.4;
     
-    // 高さのアニメーション（通常時のみ）
+    // ??????A?j???[?V?????i??????j
     const idleHeight = BOSS_BASE_HEIGHT + Math.sin(bossTime * 2.2) * 0.6;
     boss.position.y = idleHeight + bossHitReaction * 0.6;
   }
 
-  // 挑発中は通常の回転処理をスキップ
+  // ????????????]??????X?L?b?v
   if (!bossTaunting) {
     tmpVecA.subVectors(camera.position, boss.position);
     const horizontalDistance = Math.hypot(tmpVecA.x, tmpVecA.z) || 0.0001;
@@ -2221,7 +2120,7 @@ function updateBossBehavior(delta) {
 
   if (bossCore) {
     if (bossTaunting) {
-      // 挑発中はより激しく回転
+      // ?????????��??????]
       bossCore.rotation.x += delta * 8;
       bossCore.rotation.y += delta * 10;
       const scale = 1 + Math.sin(bossTime * 12) * 0.3;
@@ -2236,7 +2135,7 @@ function updateBossBehavior(delta) {
 
   bossFloatingCrystals.forEach((crystal, index) => {
     if (bossTaunting) {
-      // 挑発中はより激しく動く
+      // ?????????��????????
       const angle = bossTime * 6 + (index / bossFloatingCrystals.length) * Math.PI * 2;
       crystal.position.x = Math.cos(angle) * 6;
       crystal.position.z = Math.sin(angle) * 6;
@@ -2255,7 +2154,7 @@ function updateBossBehavior(delta) {
 
   bossEnergyRings.forEach((ring, index) => {
     if (bossTaunting) {
-      // 挑発中はより激しく回転
+      // ?????????��??????]
       ring.rotation.z += delta * (3 + index * 1.5);
       const scale = 1 + Math.sin(bossTime * 8 + index) * 0.3;
       ring.scale.setScalar(scale);
@@ -2269,7 +2168,7 @@ function updateBossBehavior(delta) {
   bossShoulders.forEach((data) => {
     const offset = data.phase || 0;
     if (bossTaunting) {
-      // 挑発中はより激しく動く
+      // ?????????��????????
       data.group.position.y = 5 + Math.sin(bossTime * 8 + offset) * 4;
       data.group.rotation.z = Math.sin(bossTime * 6 + offset) * 0.8;
       if (data.cannon && data.cannon.material && data.cannon.material.emissive) {
@@ -2287,7 +2186,7 @@ function updateBossBehavior(delta) {
   bossWings.forEach((data) => {
     const offset = data.phase || 0;
     if (bossTaunting) {
-      // 挑発中はより激しく動く
+      // ?????????��????????
       data.group.rotation.y = Math.sin(bossTime * 8 + offset) * 1.2;
       data.group.position.z = -4 + Math.sin(bossTime * 10 + offset) * 5;
     } else {
@@ -2602,11 +2501,14 @@ if (shootButton) {
 if (startButton) {
   const triggerStartBattle = () => {
     if (gameActive) return;
-  if (!isMobile && !gyroActive) {
-    renderer.domElement.requestPointerLock().catch((err) => {
-      console.warn('Pointer lock request failed:', err);
-    });
-  }
+    if (!isMobile && !gyroActive) {
+      // ?|?C???^?[???b?N??v???O?????`?F?b?N
+      if (!document.pointerLockElement) {
+        renderer.domElement.requestPointerLock().catch((err) => {
+          console.warn('Pointer lock request failed:', err);
+        });
+      }
+    }
     startBattle();
   };
   startButton.addEventListener("click", (event) => {
@@ -2629,8 +2531,12 @@ document.addEventListener("mousedown", (event) => {
 renderer.domElement.addEventListener("click", () => {
   if (gyroActive || isMobile) return;
   if (!pointerLocked) {
+    // ?|?C???^?[???b?N??v???O?????`?F?b?N
+    if (document.pointerLockElement) {
+      return; // ???????v?f?????b?N??????????????????
+    }
     renderer.domElement.requestPointerLock().catch((err) => {
-      // SecurityError等を静かに処理
+      // SecurityError????A??????
       console.warn('Pointer lock request failed:', err);
     });
   }
@@ -2639,6 +2545,12 @@ renderer.domElement.addEventListener("click", () => {
 document.addEventListener("pointerlockchange", () => {
   pointerLocked = document.pointerLockElement === renderer.domElement;
   renderer.domElement.style.cursor = pointerLocked ? "none" : (gyroActive ? "auto" : "grab");
+});
+
+document.addEventListener("pointerlockerror", (event) => {
+  console.warn("Pointer lock error:", event);
+  pointerLocked = false;
+  renderer.domElement.style.cursor = gyroActive ? "auto" : "grab";
 });
 
 setBossTargetAroundPlayer();
@@ -2692,8 +2604,3 @@ renderer.setAnimationLoop(() => {
 
 </body>
 </html>
-
-
-
-
-
