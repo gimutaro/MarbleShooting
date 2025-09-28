@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="ja">
 <head>
   <meta charset="UTF-8" />
@@ -23,6 +23,31 @@
     #crosshair.powered .circle { border-color: rgba(173, 235, 255, 0.9); box-shadow: 0 0 8px rgba(120, 210, 255, 0.75); }
     #crosshair.flash { animation: crosshairFlash 0.2s ease-out; }
     @keyframes crosshairFlash { 0% { transform: translate(-50%, -50%) scale(1.3); } 100% { transform: translate(-50%, -50%) scale(1); } }
+    #startButton {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      padding: 18px 48px;
+      border: 1px solid rgba(166, 213, 255, 0.7);
+      background: rgba(20, 32, 70, 0.86);
+      color: #e8f4ff;
+      font-family: system-ui, sans-serif;
+      letter-spacing: 0.22em;
+      font-size: 0.9rem;
+      text-transform: uppercase;
+      z-index: 12;
+      cursor: pointer;
+      box-shadow: 0 0 24px rgba(110, 202, 255, 0.45), inset 0 0 12px rgba(36, 82, 160, 0.6);
+      backdrop-filter: blur(4px);
+      transition: transform 0.15s ease;
+    }
+    #startButton:active {
+      transform: translate(-50%, -50%) scale(0.97);
+    }
+    #startButton.hidden {
+      display: none;
+    }
     #shootButton { position: fixed; bottom: 24px; left: 24px; width: 112px; height: 112px; border-radius: 50%; border: 1px solid rgba(132, 182, 255, 0.6); display: flex; align-items: center; justify-content: center; font-family: system-ui, sans-serif; font-size: 0.78rem; letter-spacing: 0.18em; color: #dff4ff; background: radial-gradient(circle at 30% 30%, rgba(86, 149, 255, 0.55), rgba(18, 37, 82, 0.85) 58%, rgba(7, 12, 28, 0.95)); box-shadow: 0 0 22px rgba(64, 128, 255, 0.42), inset 0 0 18px rgba(22, 90, 150, 0.45); z-index: 7; cursor: pointer; user-select: none; touch-action: none; backdrop-filter: blur(2px); }
     #shootButton::before { content: ''; position: absolute; inset: 8px; border-radius: 50%; border: 1px solid rgba(166, 213, 255, 0.35); box-shadow: inset 0 0 20px rgba(117, 182, 255, 0.35), 0 0 14px rgba(48, 120, 220, 0.35); background: radial-gradient(circle, rgba(72, 140, 255, 0.18), rgba(9, 24, 49, 0.0) 62%); }
     #shootButton::after { content: ''; position: absolute; inset: 0; border-radius: 50%; box-shadow: 0 0 28px rgba(60, 140, 255, 0.4); opacity: 0.7; }
@@ -57,7 +82,8 @@
       <button id="requestGyro">Enable Gyro</button>
     </div>
   </div>
-  <div id="scoreDisplay">Shoot to engage | Player HP: 5 / 5 | Boss HP: 12 / 12</div>
+  <div id="scoreDisplay">Press START to begin</div>
+  <button id="startButton">START</button>
   <div id="crosshair"><div class="circle"></div></div>
   <div id="shootButton">
     <div class="shoot-crosshair"></div>
@@ -73,7 +99,8 @@ import * as THREE from "three";
 import { SparkRenderer, SplatMesh } from "@sparkjsdev/spark";
 
 const SPZ_URL = "https://space-gimu.s3.ap-northeast-1.amazonaws.com/space.spz";
-const MOVE_SPEED = 2.5;
+const MOVE_SPEED = 3.8;
+const MOBILE_MOVE_SPEED = 6.0;
 const POINTER_SENSITIVITY = 0.002;
 const PITCH_LIMIT = Math.PI / 2 - 0.01;
 const BULLET_SPEED = 40;
@@ -90,6 +117,11 @@ const BOSS_ORBIT_RADIUS_MIN = 26;
 const BOSS_ORBIT_RADIUS_MAX = 42;
 const BOSS_MODEL_SCALE = 0.9;
 const BOSS_BASE_HEIGHT = 6.5;
+const BOSS_HIT_EFFECT_DURATION = 0.6;
+const BOSS_HIT_SPARK_COUNT = 120;
+const BOSS_HIT_ARC_COUNT = 15;
+const BOSS_HIT_RING_MAX_SCALE = 7.0;
+const BOSS_HIT_PARTICLE_COUNT = 160;
 
 const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
 renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -123,6 +155,7 @@ const requestGyroButton = document.getElementById("requestGyro");
 const mobileUI = document.getElementById("mobileUI");
 const moveJoystick = document.getElementById("moveJoystick");
 const moveStick = document.getElementById("moveStick");
+const startButton = document.getElementById("startButton");
 const shootButton = document.getElementById("shootButton");
 const scoreDisplay = document.getElementById("scoreDisplay");
 const crosshair = document.getElementById("crosshair");
@@ -139,6 +172,7 @@ let lastTouchY = 0;
 const bullets = [];
 const bossAttacks = [];
 const bossDeathPieces = [];
+const bossHitEffects = [];
 let playerHealth = PLAYER_MAX_HEALTH;
 let bossHealth = BOSS_MAX_HEALTH;
 let shootCooldownTimer = 0;
@@ -147,6 +181,11 @@ let bossMoveTimer = 0;
 let bossTime = 0;
 let bossHitReaction = 0;
 let bossAttackPattern = 0;
+let bossStunned = false;
+let bossStunTimer = 0;
+let bossStunDuration = 0.8;
+let bossFlashTimer = 0;
+let bossFlashDuration = 0.6;
 let gameStarted = false;
 let gameActive = false;
 let victoryAchieved = false;
@@ -193,15 +232,34 @@ function setBossTargetAroundPlayer() {
   bossTargetOffset.set(Math.sin(angle) * radius, 0, Math.cos(angle) * radius);
   updateBossTargetPositionFromPlayer();
 }
+function hideStartButton() {
+  if (!startButton) return;
+  startButton.classList.add("hidden");
+}
+
+function showStartButton(label) {
+  if (!startButton) return;
+  startButton.textContent = label || "START";
+  startButton.classList.remove("hidden");
+  if (document.pointerLockElement === renderer.domElement) {
+    document.exitPointerLock();
+  }
+  pointerLocked = false;
+  renderer.domElement.style.cursor = gyroActive ? "auto" : "grab";
+}
 
 function updateHud() {
   if (!scoreDisplay) return;
+  if (defeat) {
+    scoreDisplay.textContent = "GAME OVER";
+    return;
+  }
+  if (victoryAchieved) {
+    scoreDisplay.textContent = "Victory! Press START to battle again";
+    return;
+  }
   if (!gameStarted) {
-    scoreDisplay.textContent = "Shoot to engage | Player HP: " + playerHealth + "/" + PLAYER_MAX_HEALTH + " | Boss HP: " + bossHealth + "/" + BOSS_MAX_HEALTH;
-  } else if (victoryAchieved) {
-    scoreDisplay.textContent = "Victory! Core shattered. Shoot to restart";
-  } else if (defeat) {
-    scoreDisplay.textContent = "Defeat... Shoot to retry";
+    scoreDisplay.textContent = "Press START to begin";
   } else {
     scoreDisplay.textContent = "Player HP: " + playerHealth + "/" + PLAYER_MAX_HEALTH + "  Boss HP: " + bossHealth + "/" + BOSS_MAX_HEALTH;
   }
@@ -525,35 +583,407 @@ function clearBossDeathPieces() {
   isBossDying = false;
 }
 
+function clearBossHitEffects() {
+  for (let i = bossHitEffects.length - 1; i >= 0; i--) {
+    const effect = bossHitEffects[i];
+    if (effect.ring) scene.remove(effect.ring);
+    if (effect.backRing) scene.remove(effect.backRing);
+    if (effect.glow) scene.remove(effect.glow);
+    if (effect.core) scene.remove(effect.core);
+    if (effect.light) scene.remove(effect.light);
+    if (effect.sparks) {
+      effect.sparks.forEach((spark) => {
+        if (spark.mesh) scene.remove(spark.mesh);
+      });
+    }
+    if (effect.arcs) {
+      effect.arcs.forEach((arcData) => {
+        if (arcData.line) scene.remove(arcData.line);
+      });
+    }
+    if (effect.particles && effect.particles.points) {
+      scene.remove(effect.particles.points);
+    }
+  }
+  bossHitEffects.length = 0;
+}
+
 function flashBoss() {
   if (!boss) return;
-  const flashColor = new THREE.Color(0xff6666);
-  const flashEmissive = new THREE.Color(0xff3333);
-  boss.traverse((child) => {
-    if (child.isMesh && child !== bossWeakPoint) {
-      const material = child.material;
-      if (!material.userData) material.userData = {};
-      if (!material.userData.originalColor) {
-        material.userData.originalColor = material.color.clone();
-      }
-      if (material.emissive && !material.userData.originalEmissive) {
-        material.userData.originalEmissive = material.emissive.clone();
-      }
-      material.color.lerp(flashColor, 0.5);
-      if (material.emissive) {
-        material.emissive.lerp(flashEmissive, 0.7);
-      }
-      setTimeout(() => {
-        if (!material.userData) return;
-        if (material.userData.originalColor) {
-          material.color.copy(material.userData.originalColor);
+  
+  // 複数回の点滅エフェクト
+  const flashSequence = [
+    { delay: 0, intensity: 0.8, duration: 100 },
+    { delay: 150, intensity: 0.6, duration: 100 },
+    { delay: 300, intensity: 0.4, duration: 100 },
+    { delay: 450, intensity: 0.2, duration: 100 }
+  ];
+  
+  flashSequence.forEach((flash, index) => {
+    setTimeout(() => {
+      if (!boss) return;
+      
+      const flashColor = new THREE.Color(0xff0000);
+      const flashEmissive = new THREE.Color(0xff0000);
+      
+      boss.traverse((child) => {
+        if (child.isMesh && child !== bossWeakPoint) {
+          const material = child.material;
+          if (!material.userData) material.userData = {};
+          if (!material.userData.originalColor) {
+            material.userData.originalColor = material.color.clone();
+          }
+          if (material.emissive && !material.userData.originalEmissive) {
+            material.userData.originalEmissive = material.emissive.clone();
+          }
+          
+          // より強い赤色で点滅
+          material.color.lerp(flashColor, flash.intensity);
+          if (material.emissive) {
+            material.emissive.lerp(flashEmissive, flash.intensity * 1.5);
+          }
+          
+          setTimeout(() => {
+            if (!material.userData || !boss) return;
+            if (material.userData.originalColor) {
+              material.color.copy(material.userData.originalColor);
+            }
+            if (material.emissive && material.userData.originalEmissive) {
+              material.emissive.copy(material.userData.originalEmissive);
+            }
+          }, flash.duration);
         }
-        if (material.emissive && material.userData.originalEmissive) {
-          material.emissive.copy(material.userData.originalEmissive);
-        }
-      }, 160);
-    }
+      });
+    }, flash.delay);
   });
+}
+
+function spawnBossHitEffect(worldPosition) {
+  const center = worldPosition.clone();
+  const bossReference = boss; // ボスの参照を保存
+
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(1.5, 3.5, 72, 1),
+    new THREE.MeshBasicMaterial({
+      color: 0x00ffff,
+      transparent: true,
+      opacity: 0.9,
+      blending: THREE.NormalBlending,
+      side: THREE.DoubleSide,
+      depthWrite: true
+    })
+  );
+  ring.position.copy(center);
+  ring.lookAt(camera.position);
+  scene.add(ring);
+
+  const backRing = ring.clone();
+  backRing.material = ring.material.clone();
+  backRing.material.opacity = 0.6;
+  scene.add(backRing);
+
+  const glow = new THREE.Mesh(
+    new THREE.SphereGeometry(1.2, 28, 28),
+    new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.9,
+      blending: THREE.NormalBlending,
+      depthWrite: true
+    })
+  );
+  glow.position.copy(center);
+  scene.add(glow);
+
+  const core = new THREE.Mesh(
+    new THREE.IcosahedronGeometry(0.7, 2),
+    new THREE.MeshBasicMaterial({
+      color: 0xffff00,
+      transparent: true,
+      opacity: 1.0,
+      blending: THREE.NormalBlending,
+      depthWrite: true
+    })
+  );
+  core.position.copy(center);
+  scene.add(core);
+
+  const light = new THREE.PointLight(0xffff00, 25, 80);
+  light.position.copy(center);
+  scene.add(light);
+
+  const sparks = [];
+  const sparkPalette = [0xffff00, 0xff8800, 0xff4400, 0xff0044, 0x00ffff, 0xffffff];
+  for (let i = 0; i < BOSS_HIT_SPARK_COUNT; i++) {
+    const spark = new THREE.Mesh(
+      new THREE.ConeGeometry(0.25, 1.8, 18),
+      new THREE.MeshBasicMaterial({
+        color: sparkPalette[Math.floor(Math.random() * sparkPalette.length)],
+        transparent: true,
+        opacity: 1,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false
+      })
+    );
+    spark.position.copy(center);
+    const dir = new THREE.Vector3(
+      THREE.MathUtils.randFloatSpread(2.0),
+      THREE.MathUtils.randFloat(0.3, 2.0),
+      THREE.MathUtils.randFloatSpread(2.0)
+    ).normalize();
+    const speed = THREE.MathUtils.randFloat(15, 35);
+    const velocity = dir.multiplyScalar(speed);
+    spark.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone());
+    scene.add(spark);
+    sparks.push({
+      mesh: spark,
+      velocity,
+      rotationAxis: new THREE.Vector3(Math.random(), Math.random(), Math.random()).normalize(),
+      rotationSpeed: THREE.MathUtils.randFloat(-10, 10)
+    });
+  }
+
+  const arcs = [];
+  for (let i = 0; i < BOSS_HIT_ARC_COUNT; i++) {
+    const segmentCount = THREE.MathUtils.randInt(4, 6);
+    const basePoints = [];
+    let current = new THREE.Vector3();
+    basePoints.push(current.clone());
+    const orientation = new THREE.Quaternion().setFromEuler(new THREE.Euler(
+      THREE.MathUtils.randFloat(0, Math.PI * 2),
+      THREE.MathUtils.randFloat(0, Math.PI * 2),
+      THREE.MathUtils.randFloat(0, Math.PI * 2)
+    ));
+    for (let s = 0; s < segmentCount; s++) {
+      const step = new THREE.Vector3(
+        THREE.MathUtils.randFloatSpread(0.9),
+        THREE.MathUtils.randFloatSpread(0.9),
+        THREE.MathUtils.randFloatSpread(0.9)
+      )
+        .normalize()
+        .multiplyScalar(THREE.MathUtils.randFloat(0.8, 2.2));
+      current = current.clone().add(step);
+      basePoints.push(current.clone());
+    }
+    const rotated = basePoints.map((pt) => pt.clone().applyQuaternion(orientation));
+    const geometry = new THREE.BufferGeometry().setFromPoints(rotated);
+    const material = new THREE.LineBasicMaterial({
+      color: 0xffff00,
+      transparent: true,
+      opacity: 1.0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      linewidth: 3
+    });
+    const arc = new THREE.Line(geometry, material);
+    arc.position.copy(center);
+    scene.add(arc);
+    arcs.push({ line: arc, basePoints: rotated, material });
+  }
+
+  const particlePositions = new Float32Array(BOSS_HIT_PARTICLE_COUNT * 3);
+  const particleVelocities = [];
+  for (let i = 0; i < BOSS_HIT_PARTICLE_COUNT; i++) {
+    const dir = new THREE.Vector3(
+      THREE.MathUtils.randFloatSpread(1.4),
+      THREE.MathUtils.randFloatSpread(1.4),
+      THREE.MathUtils.randFloatSpread(1.4)
+    ).normalize();
+    const speed = THREE.MathUtils.randFloat(9, 20);
+    particleVelocities.push(dir.multiplyScalar(speed));
+    particlePositions[i * 3 + 0] = center.x;
+    particlePositions[i * 3 + 1] = center.y;
+    particlePositions[i * 3 + 2] = center.z;
+  }
+  const particlesGeometry = new THREE.BufferGeometry();
+  particlesGeometry.setAttribute('position', new THREE.Float32BufferAttribute(particlePositions, 3));
+  const particlesMaterial = new THREE.PointsMaterial({
+    color: 0x00ffff,
+    size: 0.3,
+    transparent: true,
+    opacity: 0.9,
+    blending: THREE.NormalBlending,
+    depthWrite: true
+  });
+  const particles = new THREE.Points(particlesGeometry, particlesMaterial);
+  scene.add(particles);
+
+  bossHitEffects.push({
+    center,
+    ring,
+    backRing,
+    glow,
+    core,
+    light,
+    sparks,
+    arcs,
+    particles: {
+      points: particles,
+      geometry: particlesGeometry,
+      material: particlesMaterial,
+      velocities: particleVelocities,
+      positions: particlePositions
+    },
+    life: BOSS_HIT_EFFECT_DURATION,
+    maxLife: BOSS_HIT_EFFECT_DURATION,
+    bossReference,
+    offsetFromBoss: worldPosition.clone().sub(bossReference ? bossReference.position : new THREE.Vector3())
+  });
+}
+
+function updateBossHitEffects(delta) {
+  for (let i = bossHitEffects.length - 1; i >= 0; i--) {
+    const effect = bossHitEffects[i];
+    effect.life -= delta;
+    const lifeRatio = Math.max(effect.life, 0) / effect.maxLife;
+    const progress = 1 - lifeRatio;
+
+    // ボスが停止中の場合のみ位置に追従
+    if (effect.bossReference && effect.bossReference.position && bossStunned) {
+      const newCenter = effect.bossReference.position.clone().add(effect.offsetFromBoss);
+      effect.center.copy(newCenter);
+      
+      // エフェクトの位置を更新
+      if (effect.ring) effect.ring.position.copy(newCenter);
+      if (effect.backRing) effect.backRing.position.copy(newCenter);
+      if (effect.glow) effect.glow.position.copy(newCenter);
+      if (effect.core) effect.core.position.copy(newCenter);
+      if (effect.light) effect.light.position.copy(newCenter);
+      
+      // スパークの位置は移動するので、初期位置のみ更新
+      // スパークは既に移動しているので、位置をリセットしない
+      
+      // アークの位置を更新
+      if (effect.arcs) {
+        effect.arcs.forEach((arcData) => {
+          if (arcData.line) {
+            arcData.line.position.copy(newCenter);
+          }
+        });
+      }
+      
+      // パーティクルの位置は移動するので、初期位置のみ更新
+      // パーティクルは既に移動しているので、位置をリセットしない
+    }
+
+    if (effect.ring) {
+      const ringScale = 1 + progress * (BOSS_HIT_RING_MAX_SCALE - 1);
+      effect.ring.scale.setScalar(ringScale);
+      effect.ring.lookAt(camera.position);
+      if (effect.ring.material) {
+        effect.ring.material.opacity = THREE.MathUtils.lerp(0.9, 0, Math.pow(progress, 0.9));
+      }
+    }
+
+    if (effect.backRing) {
+      const ringScale = 1 + progress * (BOSS_HIT_RING_MAX_SCALE * 1.2 - 1);
+      effect.backRing.scale.setScalar(ringScale);
+      effect.backRing.lookAt(camera.position);
+      if (effect.backRing.material) {
+        effect.backRing.material.opacity = THREE.MathUtils.lerp(0.6, 0, progress);
+      }
+    }
+
+    if (effect.glow) {
+      const glowScale = 1.2 + progress * 4.0;
+      effect.glow.scale.setScalar(glowScale);
+      if (effect.glow.material) {
+        effect.glow.material.opacity = THREE.MathUtils.lerp(0.9, 0, Math.pow(progress, 1.1));
+      }
+    }
+
+    if (effect.core) {
+      const coreScale = 0.7 + Math.sin(progress * Math.PI * 2) * 0.3 + progress * 1.2;
+      effect.core.scale.setScalar(coreScale);
+      effect.core.rotation.x += delta * 6;
+      effect.core.rotation.y += delta * 7;
+      effect.core.material.opacity = THREE.MathUtils.lerp(1.0, 0, progress);
+    }
+
+    if (effect.light) {
+      effect.light.intensity = THREE.MathUtils.lerp(25, 0, progress);
+      effect.light.distance = THREE.MathUtils.lerp(80, 20, progress);
+    }
+
+    if (effect.sparks) {
+      effect.sparks.forEach((sparkData) => {
+        if (!sparkData.mesh) return;
+        sparkData.velocity.multiplyScalar(1 - delta * 0.3);
+        sparkData.velocity.y -= delta * 8;
+        sparkData.mesh.position.addScaledVector(sparkData.velocity, delta);
+        sparkData.mesh.rotateOnAxis(sparkData.rotationAxis, sparkData.rotationSpeed * delta);
+        const mat = sparkData.mesh.material;
+        if (mat) {
+          mat.opacity = Math.max(0, 1 - progress * 0.8);
+        }
+        if (sparkData.mesh.position.distanceToSquared(effect.center) > 1600) {
+          scene.remove(sparkData.mesh);
+          sparkData.mesh = null;
+        }
+      });
+    }
+
+    if (effect.arcs) {
+      effect.arcs.forEach((arcData) => {
+        if (!arcData.line) return;
+        const positions = arcData.line.geometry.attributes.position;
+        for (let p = 0; p < arcData.basePoints.length; p++) {
+          const base = arcData.basePoints[p];
+          const jitter = (1 - progress) * 0.45;
+          positions.setXYZ(
+            p,
+            base.x + THREE.MathUtils.randFloatSpread(jitter),
+            base.y + THREE.MathUtils.randFloatSpread(jitter),
+            base.z + THREE.MathUtils.randFloatSpread(jitter)
+          );
+        }
+        positions.needsUpdate = true;
+        if (arcData.material) {
+          arcData.material.opacity = THREE.MathUtils.lerp(1.0, 0, progress);
+        }
+      });
+    }
+
+    if (effect.particles) {
+      const positions = effect.particles.positions;
+      const velocities = effect.particles.velocities;
+      for (let p = 0; p < velocities.length; p++) {
+        const vel = velocities[p];
+        vel.multiplyScalar(1 - delta * 0.4);
+        vel.y -= delta * 7;
+        const idx = p * 3;
+        positions[idx + 0] += vel.x * delta;
+        positions[idx + 1] += vel.y * delta;
+        positions[idx + 2] += vel.z * delta;
+      }
+      effect.particles.geometry.attributes.position.needsUpdate = true;
+      if (effect.particles.material) {
+        effect.particles.material.opacity = Math.max(0, 0.9 - progress * 1.3);
+      }
+    }
+
+    if (effect.life <= 0) {
+      if (effect.ring) scene.remove(effect.ring);
+      if (effect.backRing) scene.remove(effect.backRing);
+      if (effect.glow) scene.remove(effect.glow);
+      if (effect.core) scene.remove(effect.core);
+      if (effect.light) scene.remove(effect.light);
+      if (effect.sparks) {
+        effect.sparks.forEach((sparkData) => {
+          if (sparkData.mesh) scene.remove(sparkData.mesh);
+        });
+      }
+      if (effect.arcs) {
+        effect.arcs.forEach((arcData) => {
+          if (arcData.line) scene.remove(arcData.line);
+        });
+      }
+      if (effect.particles && effect.particles.points) {
+        scene.remove(effect.particles.points);
+      }
+      bossHitEffects.splice(i, 1);
+    }
+  }
 }
 
 function startBossDeathSequence() {
@@ -562,6 +992,7 @@ function startBossDeathSequence() {
   gameActive = false;
   gameStarted = false;
   isBossDying = true;
+  showStartButton("RESTART");
 
   const origin = new THREE.Vector3();
   boss.getWorldPosition(origin);
@@ -612,6 +1043,7 @@ function startBossDeathSequence() {
 function startBattle() {
   clearBossAttacks();
   clearBossDeathPieces();
+  clearBossHitEffects();
   playerHealth = PLAYER_MAX_HEALTH;
   bossHealth = BOSS_MAX_HEALTH;
   shootCooldownTimer = 0;
@@ -620,10 +1052,14 @@ function startBattle() {
   bossTime = 0;
   bossHitReaction = 0;
   bossAttackPattern = 0;
+  bossStunned = false;
+  bossStunTimer = 0;
+  bossFlashTimer = 0;
   victoryAchieved = false;
   defeat = false;
   gameStarted = true;
   gameActive = true;
+  hideStartButton();
 
   setBossTargetAroundPlayer();
 
@@ -649,17 +1085,24 @@ function applyPlayerDamage(amount) {
     defeat = true;
     gameActive = false;
     gameStarted = false;
+    showStartButton("RESTART");
     clearBossAttacks();
   }
   updateHud();
 }
 
 function handleBossHit(worldPosition) {
-  if (!gameActive || victoryAchieved || !bossWeakPoint) return;
+  if (!gameActive || victoryAchieved || !bossWeakPoint || bossStunned) return;
+  
+  // ボスを停止状態にする
+  bossStunned = true;
+  bossStunTimer = bossStunDuration;
+  bossFlashTimer = bossFlashDuration;
+  
   bossHealth = Math.max(0, bossHealth - 1);
   bossHitReaction = 1;
   bossMoveTimer = 0;
-  setBossTargetAroundPlayer();
+  // 停止中は移動しないので、setBossTargetAroundPlayer()を呼ばない
 
   const flash = new THREE.PointLight(0xffff80, 26, 40);
   flash.position.copy(worldPosition);
@@ -667,6 +1110,7 @@ function handleBossHit(worldPosition) {
   setTimeout(() => scene.remove(flash), 200);
 
   flashBoss();
+  spawnBossHitEffect(worldPosition);
   updateHud();
 
   if (bossHealth <= 0) {
@@ -688,10 +1132,7 @@ function createBullet() {
 }
 
 function shoot() {
-  if (!gameStarted) {
-    startBattle();
-  }
-  if (!gameActive || shootCooldownTimer > 0) {
+  if (!gameStarted || !gameActive || shootCooldownTimer > 0) {
     return;
   }
   shootCooldownTimer = SHOOT_COOLDOWN;
@@ -900,7 +1341,7 @@ function shootHomingShards() {
 }
 
 function performBossAttack() {
-  if (!gameActive || victoryAchieved || defeat) return;
+  if (!gameActive || victoryAchieved || defeat || bossStunned) return;
   switch (bossAttackPattern) {
     case 0:
       shootFocusedVolley();
@@ -926,16 +1367,71 @@ function updateBossBehavior(delta) {
   bossMoveTimer += delta;
   bossHitReaction = Math.max(0, bossHitReaction - delta * 1.5);
 
-  updateBossTargetPositionFromPlayer();
+  // 停止状態の管理
+  if (bossStunned) {
+    bossStunTimer -= delta;
+    bossFlashTimer -= delta;
+    
+    // 点滅エフェクトの管理
+    if (bossFlashTimer > 0) {
+      const flashIntensity = Math.sin(bossFlashTimer * 20) * 0.5 + 0.5;
+      const flashColor = new THREE.Color(0xff0000);
+      const flashEmissive = new THREE.Color(0xff0000);
+      
+      boss.traverse((child) => {
+        if (child.isMesh && child !== bossWeakPoint) {
+          const material = child.material;
+          if (!material.userData) material.userData = {};
+          if (!material.userData.originalColor) {
+            material.userData.originalColor = material.color.clone();
+          }
+          if (material.emissive && !material.userData.originalEmissive) {
+            material.userData.originalEmissive = material.emissive.clone();
+          }
+          
+          // 連続的な点滅
+          material.color.lerp(flashColor, flashIntensity * 0.6);
+          if (material.emissive) {
+            material.emissive.lerp(flashEmissive, flashIntensity * 0.8);
+          }
+        }
+      });
+    } else {
+      // 点滅が終わったら元の色に戻す
+      boss.traverse((child) => {
+        if (child.isMesh && child !== bossWeakPoint) {
+          const material = child.material;
+          if (material.userData && material.userData.originalColor) {
+            material.color.copy(material.userData.originalColor);
+          }
+          if (material.emissive && material.userData && material.userData.originalEmissive) {
+            material.emissive.copy(material.userData.originalEmissive);
+          }
+        }
+      });
+    }
+    
+    if (bossStunTimer <= 0) {
+      bossStunned = false;
+      // 停止が終わったら新しい位置を設定
+      setBossTargetAroundPlayer();
+    }
+    // 停止中は移動しないが、アニメーションは続ける
+    // アニメーション部分は下に移動
+  } else {
+    // 通常時のみ移動処理
+    updateBossTargetPositionFromPlayer();
 
-  if (bossMoveTimer >= BOSS_MOVE_INTERVAL) {
-    bossMoveTimer = 0;
-    setBossTargetAroundPlayer();
+    if (bossMoveTimer >= BOSS_MOVE_INTERVAL) {
+      bossMoveTimer = 0;
+      setBossTargetAroundPlayer();
+    }
+
+    boss.position.x += (bossTargetPosition.x - boss.position.x) * delta * 2.4;
+    boss.position.z += (bossTargetPosition.z - boss.position.z) * delta * 2.4;
   }
 
-  boss.position.x += (bossTargetPosition.x - boss.position.x) * delta * 2.4;
-  boss.position.z += (bossTargetPosition.z - boss.position.z) * delta * 2.4;
-
+  // 高さのアニメーション（停止中でも続く）
   const idleHeight = BOSS_BASE_HEIGHT + Math.sin(bossTime * 2.2) * 0.6;
   boss.position.y = idleHeight + bossHitReaction * 0.6;
 
@@ -1036,7 +1532,7 @@ function updateMovement(delta) {
   displacement.copy(forwardVector).multiplyScalar(inputVector.z);
   displacement.addScaledVector(rightVector, inputVector.x);
   if (displacement.lengthSq() === 0) return;
-  displacement.normalize().multiplyScalar(MOVE_SPEED * delta);
+  displacement.normalize().multiplyScalar((isMobile ? MOBILE_MOVE_SPEED : MOVE_SPEED) * delta);
   camera.position.add(displacement);
   camera.position.y = 1.6;
 }
@@ -1298,6 +1794,24 @@ if (shootButton) {
     shoot();
   }, { passive: false });
 }
+if (startButton) {
+  const triggerStartBattle = () => {
+    if (gameActive) return;
+    if (!isMobile && !gyroActive) {
+      renderer.domElement.requestPointerLock();
+    }
+    startBattle();
+  };
+  startButton.addEventListener("click", (event) => {
+    event.preventDefault();
+    triggerStartBattle();
+  });
+  startButton.addEventListener("touchstart", (event) => {
+    if (event.cancelable !== false) event.preventDefault();
+    triggerStartBattle();
+  }, { passive: false });
+}
+
 
 document.addEventListener("mousedown", (event) => {
   if (event.button === 0 && !isMobile && !gyroActive && pointerLocked) {
@@ -1320,6 +1834,7 @@ document.addEventListener("pointerlockchange", () => {
 setBossTargetAroundPlayer();
 initializeBoss();
 updateHud();
+showStartButton();
 
 renderer.setAnimationLoop(() => {
   const delta = clock.getDelta();
@@ -1339,6 +1854,7 @@ renderer.setAnimationLoop(() => {
   updateMovement(delta);
   updateBullets(delta);
   updateBossAttacks(delta);
+  updateBossHitEffects(delta);
   updateBossDeath(delta);
   renderer.render(scene, camera);
 });
@@ -1347,4 +1863,8 @@ renderer.setAnimationLoop(() => {
 
 </body>
 </html>
+
+
+
+
 
