@@ -633,8 +633,74 @@ function clearBossHitEffects() {
   bossHitEffects.length = 0;
 }
 
-function flashBoss() {
+function restoreBossOriginalColors() {
   if (!boss) return;
+  
+  boss.traverse((child) => {
+    if (child.isMesh && child.material && child !== bossWeakPoint) {
+      const material = child.material;
+      
+      // ボスの各パーツの元の色を明示的に設定
+      if (child.geometry instanceof THREE.OctahedronGeometry) {
+        if (material.opacity === 0.7) {
+          // 外殻
+          material.color.set(0x0099ff);
+          material.emissive.set(0x0066ff);
+          material.emissiveIntensity = 0.2;
+        } else {
+          // 内殻・その他
+          material.color.set(0x00ccff);
+          material.emissive.set(0x0099ff);
+          material.emissiveIntensity = 0.4;
+        }
+      } else if (child.geometry instanceof THREE.IcosahedronGeometry) {
+        // コア
+        material.color.set(0xffffff);
+        material.emissive.set(0x00ffff);
+        material.emissiveIntensity = 2;
+      } else if (child.geometry instanceof THREE.TetrahedronGeometry) {
+        // 肩部・装飾
+        material.color.set(0x00aaff);
+        material.emissive.set(0x0066ff);
+        material.emissiveIntensity = 0.3;
+      } else if (child.geometry instanceof THREE.ConeGeometry) {
+        // 頭部
+        material.color.set(0x0099ff);
+        material.emissive.set(0x0066ff);
+        material.emissiveIntensity = 0.3;
+      } else if (child.geometry instanceof THREE.SphereGeometry) {
+        // キャノン・目
+        if (material.emissiveIntensity === 1) {
+          material.color.set(0xff00ff);
+          material.emissive.set(0xff00ff);
+          material.emissiveIntensity = 1;
+        } else {
+          material.color.set(0xffffff);
+        }
+      } else if (child.geometry instanceof THREE.BoxGeometry) {
+        // ウィング
+        material.color.set(0x00ffff);
+        material.emissive.set(0x00ffff);
+        material.emissiveIntensity = 1.2;
+      } else if (child.geometry instanceof THREE.TorusGeometry) {
+        // エネルギーリング
+        material.color.set(0x00ffff);
+        material.emissive.set(0x00ffff);
+        material.emissiveIntensity = 1;
+      }
+      
+      // userDataをクリア
+      if (material.userData) {
+        delete material.userData.originalEmissive;
+        delete material.userData.originalEmissiveIntensity;
+        delete material.userData.originalColor;
+      }
+    }
+  });
+}
+
+function flashBoss() {
+  if (!boss || bossTaunting) return; // 挑発中は点滅しない
   
   // 複数回の点滅エフェクト
   const flashSequence = [
@@ -669,13 +735,8 @@ function flashBoss() {
           }
           
           setTimeout(() => {
-            if (!material.userData || !boss) return;
-            if (material.userData.originalColor) {
-              material.color.copy(material.userData.originalColor);
-            }
-            if (material.emissive && material.userData.originalEmissive) {
-              material.emissive.copy(material.userData.originalEmissive);
-            }
+            if (!boss) return;
+            restoreBossOriginalColors();
           }, flash.duration);
         }
       });
@@ -1089,6 +1150,9 @@ function startBattle() {
   gameStarted = true;
   gameActive = true;
   hideStartButton();
+  
+  // ボスの色をリセット（前回のゲームの挑発状態をクリア）
+  restoreBossOriginalColors();
 
   setBossTargetAroundPlayer();
 
@@ -1712,47 +1776,6 @@ function launchBattleStyleTaunt() {
     });
   }
   
-  // After taunt, launch powerful burst attack
-  setTimeout(() => {
-    if (gameActive && !victoryAchieved && !defeat) {
-      const bulletCount = 20;
-      const burstOrigin = new THREE.Vector3(boss.position.x, boss.position.y + 5, boss.position.z);
-      for (let i = 0; i < bulletCount; i++) {
-        const angle = (i / bulletCount) * Math.PI * 2;
-        const burstProjectile = new THREE.Mesh(
-          new THREE.SphereGeometry(1.2, 16, 16),
-          new THREE.MeshBasicMaterial({
-            color: 0xff00ff,
-            transparent: true,
-            opacity: 0.9
-          })
-        );
-        burstProjectile.position.copy(burstOrigin);
-        const direction = new THREE.Vector3(
-          Math.cos(angle),
-          (Math.random() - 0.5) * 0.5,
-          Math.sin(angle)
-        );
-        registerBossAttack(burstProjectile, direction.multiplyScalar(20), {
-          life: 4.5,
-          spin: new THREE.Vector3(
-            THREE.MathUtils.randFloat(-3, 3),
-            THREE.MathUtils.randFloat(-3, 3),
-            THREE.MathUtils.randFloat(-3, 3)
-          )
-        });
-      }
-      const burstLight = new THREE.PointLight(0xff00ff, 40, 50);
-      burstLight.position.copy(burstOrigin);
-      scene.add(burstLight);
-      setTimeout(() => scene.remove(burstLight), 500);
-    }
-    // Reset taunting state after burst attack
-    bossTaunting = false;
-    bossTauntTimer = 0;
-    bossTauntPhase = 0;
-    bossTauntPulseTimer = 0;
-  }, 3300);
   
   return { cooldown: 4.0 };
 }
@@ -1998,11 +2021,121 @@ function updateBossBehavior(delta) {
   // 挑発状態の管理
   if (bossTaunting) {
     bossTauntTimer -= delta;
+    
+    // 挑発フェーズの管理
+    if (bossTauntTimer > 2.0) {
+      bossTauntPhase = 0; // 笑い始め
+    } else if (bossTauntTimer > 1.0) {
+      bossTauntPhase = 1; // 激しく笑う
+    } else {
+      bossTauntPhase = 2; // 笑い終わり
+    }
+    
+    // 笑っているような動き
+    const laughIntensity = bossTauntPhase === 1 ? 2.0 : 1.0;
+    const laughSpeed = bossTauntPhase === 1 ? 15.0 : 8.0;
+    
+    // 上下に激しく揺れる
+    boss.position.y = BOSS_BASE_HEIGHT + Math.sin(bossTime * laughSpeed) * laughIntensity * 2;
+    
+    // 前後に揺れる（お辞儀するような動き）
+    boss.rotation.x = Math.sin(bossTime * laughSpeed * 0.7) * 0.3 * laughIntensity;
+    
+    // 左右に揺れる
+    boss.rotation.z = Math.sin(bossTime * laughSpeed * 0.5) * 0.2 * laughIntensity;
+    
+    // サイズを脈動させる
+    const scaleEffect = 1 + Math.sin(bossTime * laughSpeed * 0.8) * 0.1 * laughIntensity;
+    boss.scale.set(scaleEffect, scaleEffect, scaleEffect);
+    
+    // ボスを黄色く光らせる
+    boss.traverse((child) => {
+      if (child.isMesh && child.material && child !== bossWeakPoint) {
+        if (!child.material.userData) child.material.userData = {};
+        
+        // 初回のみ元の色を保存
+        if (!child.material.userData.originalEmissive) {
+          child.material.userData.originalEmissive = child.material.emissive ? child.material.emissive.clone() : new THREE.Color(0x000000);
+          child.material.userData.originalEmissiveIntensity = child.material.emissiveIntensity || 0.5;
+          child.material.userData.originalColor = child.material.color ? child.material.color.clone() : new THREE.Color(0xffffff);
+        }
+        
+        if (child.material.emissive) {
+          // 元の色と黄色をブレンド
+          const originalEmissive = child.material.userData.originalEmissive;
+          const glowColor = new THREE.Color(0xffff00);
+          child.material.emissive.copy(originalEmissive).lerp(glowColor, 0.6 * laughIntensity);
+          child.material.emissiveIntensity = child.material.userData.originalEmissiveIntensity + Math.sin(bossTime * 10) * 0.5;
+        }
+      }
+    });
+    
+    // 挑発中に小さな光のパーティクルを放出
+    if (Math.random() < 0.1) {
+      const spark = new THREE.Mesh(
+        new THREE.SphereGeometry(0.2, 8, 8),
+        new THREE.MeshBasicMaterial({
+          color: 0xffff00,
+          transparent: true,
+          opacity: 1
+        })
+      );
+      spark.position.copy(boss.position);
+      spark.position.x += (Math.random() - 0.5) * 10;
+      spark.position.y += (Math.random() - 0.5) * 10;
+      spark.position.z += (Math.random() - 0.5) * 10;
+      scene.add(spark);
+      setTimeout(() => scene.remove(spark), 500);
+    }
+    
+    // 挑発終了
     if (bossTauntTimer <= 0) {
       bossTaunting = false;
       bossTauntTimer = 0;
       bossTauntPhase = 0;
       bossTauntPulseTimer = 0;
+      boss.scale.set(1, 1, 1);
+      
+      // 色を元に戻す - より確実な方法
+      restoreBossOriginalColors();
+      
+      // 挑発後の強力な攻撃
+      setTimeout(() => {
+        if (gameActive && !bossTaunting && !victoryAchieved && !defeat) {
+          // 全方向弾幕攻撃
+          const bulletCount = 20;
+          const burstOrigin = new THREE.Vector3(boss.position.x, boss.position.y + 5, boss.position.z);
+          for (let i = 0; i < bulletCount; i++) {
+            const angle = (i / bulletCount) * Math.PI * 2;
+            const burstProjectile = new THREE.Mesh(
+              new THREE.SphereGeometry(1.2, 16, 16),
+              new THREE.MeshBasicMaterial({
+                color: 0xff00ff,
+                transparent: true,
+                opacity: 0.9
+              })
+            );
+            burstProjectile.position.copy(burstOrigin);
+            const direction = new THREE.Vector3(
+              Math.cos(angle),
+              (Math.random() - 0.5) * 0.5,
+              Math.sin(angle)
+            );
+            registerBossAttack(burstProjectile, direction.multiplyScalar(20), {
+              life: 4.5,
+              spin: new THREE.Vector3(
+                THREE.MathUtils.randFloat(-3, 3),
+                THREE.MathUtils.randFloat(-3, 3),
+                THREE.MathUtils.randFloat(-3, 3)
+              )
+            });
+          }
+          const burstLight = new THREE.PointLight(0xff00ff, 40, 50);
+          burstLight.position.copy(burstOrigin);
+          scene.add(burstLight);
+          setTimeout(() => scene.remove(burstLight), 500);
+        }
+      }, 300);
     }
   }
 
@@ -2037,17 +2170,7 @@ function updateBossBehavior(delta) {
       });
     } else {
       // 点滅が終わったら元の色に戻す
-      boss.traverse((child) => {
-        if (child.isMesh && child !== bossWeakPoint) {
-          const material = child.material;
-          if (material.userData && material.userData.originalColor) {
-            material.color.copy(material.userData.originalColor);
-          }
-          if (material.emissive && material.userData && material.userData.originalEmissive) {
-            material.emissive.copy(material.userData.originalEmissive);
-          }
-        }
-      });
+      restoreBossOriginalColors();
     }
     
     if (bossStunTimer <= 0) {
@@ -2057,8 +2180,8 @@ function updateBossBehavior(delta) {
     }
     // 停止中は移動しないが、アニメーションは続ける
     // アニメーション部分は下に移動
-  } else {
-    // 通常時のみ移動処理
+  } else if (!bossTaunting) {
+    // 通常時のみ移動処理（挑発中は移動しない）
     updateBossTargetPositionFromPlayer();
 
     if (bossMoveTimer >= BOSS_MOVE_INTERVAL) {
@@ -2068,25 +2191,28 @@ function updateBossBehavior(delta) {
 
     boss.position.x += (bossTargetPosition.x - boss.position.x) * delta * 2.4;
     boss.position.z += (bossTargetPosition.z - boss.position.z) * delta * 2.4;
+    
+    // 高さのアニメーション（通常時のみ）
+    const idleHeight = BOSS_BASE_HEIGHT + Math.sin(bossTime * 2.2) * 0.6;
+    boss.position.y = idleHeight + bossHitReaction * 0.6;
   }
 
-  // 高さのアニメーション（停止中でも続く）
-  const idleHeight = BOSS_BASE_HEIGHT + Math.sin(bossTime * 2.2) * 0.6;
-  boss.position.y = idleHeight + bossHitReaction * 0.6;
+  // 挑発中は通常の回転処理をスキップ
+  if (!bossTaunting) {
+    tmpVecA.subVectors(camera.position, boss.position);
+    const horizontalDistance = Math.hypot(tmpVecA.x, tmpVecA.z) || 0.0001;
+    const desiredYaw = Math.atan2(tmpVecA.x, tmpVecA.z);
+    const desiredPitch = Math.atan2(tmpVecA.y, horizontalDistance);
+    const orientationLerp = 1 - Math.exp(-delta * 8);
 
-  tmpVecA.subVectors(camera.position, boss.position);
-  const horizontalDistance = Math.hypot(tmpVecA.x, tmpVecA.z) || 0.0001;
-  const desiredYaw = Math.atan2(tmpVecA.x, tmpVecA.z);
-  const desiredPitch = Math.atan2(tmpVecA.y, horizontalDistance);
-  const orientationLerp = 1 - Math.exp(-delta * 8);
+    let yawDiff = desiredYaw - boss.rotation.y;
+    yawDiff = THREE.MathUtils.euclideanModulo(yawDiff + Math.PI, Math.PI * 2) - Math.PI;
+    boss.rotation.y += yawDiff * orientationLerp;
+    boss.rotation.x = THREE.MathUtils.lerp(boss.rotation.x, -desiredPitch * 0.6 + bossHitReaction * 0.12, orientationLerp);
 
-  let yawDiff = desiredYaw - boss.rotation.y;
-  yawDiff = THREE.MathUtils.euclideanModulo(yawDiff + Math.PI, Math.PI * 2) - Math.PI;
-  boss.rotation.y += yawDiff * orientationLerp;
-  boss.rotation.x = THREE.MathUtils.lerp(boss.rotation.x, -desiredPitch * 0.6 + bossHitReaction * 0.12, orientationLerp);
-
-  const leanTarget = THREE.MathUtils.clamp((bossTargetPosition.x - boss.position.x) * -0.03, -0.35, 0.35);
-  boss.rotation.z = THREE.MathUtils.lerp(boss.rotation.z, leanTarget, orientationLerp);
+    const leanTarget = THREE.MathUtils.clamp((bossTargetPosition.x - boss.position.x) * -0.03, -0.35, 0.35);
+    boss.rotation.z = THREE.MathUtils.lerp(boss.rotation.z, leanTarget, orientationLerp);
+  }
 
   if (bossHitReaction > 0) {
     boss.position.x += Math.sin(bossTime * 42) * bossHitReaction * 1.6;
@@ -2094,40 +2220,80 @@ function updateBossBehavior(delta) {
   }
 
   if (bossCore) {
-    bossCore.rotation.x += delta * 2.6;
-    bossCore.rotation.y += delta * 3.1;
-    const scale = 1 + Math.sin(bossTime * 4.2) * 0.1 + bossHitReaction * 0.05;
-    bossCore.scale.setScalar(scale);
+    if (bossTaunting) {
+      // 挑発中はより激しく回転
+      bossCore.rotation.x += delta * 8;
+      bossCore.rotation.y += delta * 10;
+      const scale = 1 + Math.sin(bossTime * 12) * 0.3;
+      bossCore.scale.setScalar(scale);
+    } else {
+      bossCore.rotation.x += delta * 2.6;
+      bossCore.rotation.y += delta * 3.1;
+      const scale = 1 + Math.sin(bossTime * 4.2) * 0.1 + bossHitReaction * 0.05;
+      bossCore.scale.setScalar(scale);
+    }
   }
 
   bossFloatingCrystals.forEach((crystal, index) => {
-    const angle = bossTime * 2 + (index / bossFloatingCrystals.length) * Math.PI * 2;
-    crystal.position.x = Math.cos(angle) * 4;
-    crystal.position.z = Math.sin(angle) * 4;
-    crystal.position.y = Math.sin(bossTime * 3 + index) * 2.2;
-    crystal.rotation.x += delta * 5;
-    crystal.rotation.y += delta * 3;
+    if (bossTaunting) {
+      // 挑発中はより激しく動く
+      const angle = bossTime * 6 + (index / bossFloatingCrystals.length) * Math.PI * 2;
+      crystal.position.x = Math.cos(angle) * 6;
+      crystal.position.z = Math.sin(angle) * 6;
+      crystal.position.y = Math.sin(bossTime * 8 + index) * 4;
+      crystal.rotation.x += delta * 15;
+      crystal.rotation.y += delta * 12;
+    } else {
+      const angle = bossTime * 2 + (index / bossFloatingCrystals.length) * Math.PI * 2;
+      crystal.position.x = Math.cos(angle) * 4;
+      crystal.position.z = Math.sin(angle) * 4;
+      crystal.position.y = Math.sin(bossTime * 3 + index) * 2.2;
+      crystal.rotation.x += delta * 5;
+      crystal.rotation.y += delta * 3;
+    }
   });
 
   bossEnergyRings.forEach((ring, index) => {
-    ring.rotation.z += delta * (1 + index * 0.5);
-    const scale = 1 + Math.sin(bossTime * 2.2 + index) * 0.1;
-    ring.scale.setScalar(scale);
+    if (bossTaunting) {
+      // 挑発中はより激しく回転
+      ring.rotation.z += delta * (3 + index * 1.5);
+      const scale = 1 + Math.sin(bossTime * 8 + index) * 0.3;
+      ring.scale.setScalar(scale);
+    } else {
+      ring.rotation.z += delta * (1 + index * 0.5);
+      const scale = 1 + Math.sin(bossTime * 2.2 + index) * 0.1;
+      ring.scale.setScalar(scale);
+    }
   });
 
   bossShoulders.forEach((data) => {
     const offset = data.phase || 0;
-    data.group.position.y = 5 + Math.sin(bossTime * 2 + offset) * 2;
-    data.group.rotation.z = Math.sin(bossTime * 1.5 + offset) * 0.3;
-    if (data.cannon && data.cannon.material && data.cannon.material.emissive) {
-      data.cannon.material.emissiveIntensity = 1 + Math.sin(bossTime * 6 + offset) * 0.5;
+    if (bossTaunting) {
+      // 挑発中はより激しく動く
+      data.group.position.y = 5 + Math.sin(bossTime * 8 + offset) * 4;
+      data.group.rotation.z = Math.sin(bossTime * 6 + offset) * 0.8;
+      if (data.cannon && data.cannon.material && data.cannon.material.emissive) {
+        data.cannon.material.emissiveIntensity = 2 + Math.sin(bossTime * 15 + offset) * 1.5;
+      }
+    } else {
+      data.group.position.y = 5 + Math.sin(bossTime * 2 + offset) * 2;
+      data.group.rotation.z = Math.sin(bossTime * 1.5 + offset) * 0.3;
+      if (data.cannon && data.cannon.material && data.cannon.material.emissive) {
+        data.cannon.material.emissiveIntensity = 1 + Math.sin(bossTime * 6 + offset) * 0.5;
+      }
     }
   });
 
   bossWings.forEach((data) => {
     const offset = data.phase || 0;
-    data.group.rotation.y = Math.sin(bossTime * 2 + offset) * 0.5;
-    data.group.position.z = -4 + Math.sin(bossTime * 3 + offset) * 2;
+    if (bossTaunting) {
+      // 挑発中はより激しく動く
+      data.group.rotation.y = Math.sin(bossTime * 8 + offset) * 1.2;
+      data.group.position.z = -4 + Math.sin(bossTime * 10 + offset) * 5;
+    } else {
+      data.group.rotation.y = Math.sin(bossTime * 2 + offset) * 0.5;
+      data.group.position.z = -4 + Math.sin(bossTime * 3 + offset) * 2;
+    }
   });
 
   if (bossWeakPoint) {
@@ -2436,9 +2602,11 @@ if (shootButton) {
 if (startButton) {
   const triggerStartBattle = () => {
     if (gameActive) return;
-    if (!isMobile && !gyroActive) {
-      renderer.domElement.requestPointerLock();
-    }
+  if (!isMobile && !gyroActive) {
+    renderer.domElement.requestPointerLock().catch((err) => {
+      console.warn('Pointer lock request failed:', err);
+    });
+  }
     startBattle();
   };
   startButton.addEventListener("click", (event) => {
@@ -2461,7 +2629,10 @@ document.addEventListener("mousedown", (event) => {
 renderer.domElement.addEventListener("click", () => {
   if (gyroActive || isMobile) return;
   if (!pointerLocked) {
-    renderer.domElement.requestPointerLock();
+    renderer.domElement.requestPointerLock().catch((err) => {
+      // SecurityError等を静かに処理
+      console.warn('Pointer lock request failed:', err);
+    });
   }
 });
 
