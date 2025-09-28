@@ -122,6 +122,10 @@ const BOSS_HIT_SPARK_COUNT = 120;
 const BOSS_HIT_ARC_COUNT = 15;
 const BOSS_HIT_RING_MAX_SCALE = 7.0;
 const BOSS_HIT_PARTICLE_COUNT = 160;
+const BOSS_TAUNT_DURATION = 3.0;
+const BOSS_TAUNT_COOLDOWN = 4.0;
+const BOSS_TAUNT_BURST_DELAY = 0.3;
+const BOSS_TAUNT_BURST_PROJECTILES = 20;
 
 const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
 renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -171,6 +175,7 @@ let lastTouchY = 0;
 
 const bullets = [];
 const bossAttacks = [];
+const bossTauntParticles = [];
 const bossDeathPieces = [];
 const bossHitEffects = [];
 let playerHealth = PLAYER_MAX_HEALTH;
@@ -191,6 +196,10 @@ let gameActive = false;
 let victoryAchieved = false;
 let defeat = false;
 let isBossDying = false;
+let bossTaunting = false;
+let bossTauntTimer = 0;
+let bossTauntPhase = 0;
+let bossTauntPulseTimer = 0;
 
 let boss = null;
 let bossCore = null;
@@ -556,16 +565,32 @@ function initializeBoss() {
 
 function registerBossAttack(mesh, velocity, options) {
   options = options || {};
-  mesh.position.addScaledVector(velocity.clone().normalize(), 0.2);
+  const velocityDir = velocity.clone();
+  const spawnOffset = options.spawnOffset === undefined ? 0.2 : options.spawnOffset;
+  if (velocityDir.lengthSq() > 0) {
+    velocityDir.normalize();
+  }
+  if (spawnOffset !== 0) {
+    mesh.position.addScaledVector(velocityDir, spawnOffset);
+  }
   scene.add(mesh);
-  bossAttacks.push({
+  const attackData = {
     mesh,
     velocity,
     life: options.life === undefined ? 4 : options.life,
     spin: options.spin || new THREE.Vector3(),
     damage: options.damage === undefined ? 1 : options.damage,
-    homing: options.homing || false
-  });
+    homing: options.homing || false,
+    alignToVelocity: !!options.alignToVelocity,
+    speedDamping: options.speedDamping || 0,
+    onUpdate: typeof options.onUpdate === "function" ? options.onUpdate : null,
+    cleanup: typeof options.cleanup === "function" ? options.cleanup : null
+  };
+  if (options.extra !== undefined) {
+    attackData.extra = options.extra;
+  }
+  bossAttacks.push(attackData);
+  return attackData;
 }
 
 function clearBossAttacks() {
@@ -1055,6 +1080,10 @@ function startBattle() {
   bossStunned = false;
   bossStunTimer = 0;
   bossFlashTimer = 0;
+  bossTaunting = false;
+  bossTauntTimer = 0;
+  bossTauntPhase = 0;
+  bossTauntPulseTimer = 0;
   victoryAchieved = false;
   defeat = false;
   gameStarted = true;
@@ -1173,17 +1202,41 @@ function updateBossAttacks(delta) {
       continue;
     }
     attack.life -= delta;
+
     if (attack.homing && gameActive) {
       tmpVecA.copy(camera.position).sub(attack.mesh.position).normalize();
       const speed = attack.velocity.length();
       attack.velocity.lerp(tmpVecA.multiplyScalar(speed), delta * 0.9);
     }
+
+    if (attack.speedDamping) {
+      const damping = Math.max(0, 1 - attack.speedDamping * delta);
+      attack.velocity.multiplyScalar(damping);
+    }
+
     attack.mesh.position.addScaledVector(attack.velocity, delta);
+
+    if (attack.alignToVelocity) {
+      tmpVecB.copy(attack.velocity);
+      if (tmpVecB.lengthSq() > 0.0001) {
+        tmpVecB.normalize();
+        tmpVecB.add(attack.mesh.position);
+        attack.mesh.lookAt(tmpVecB);
+      }
+    }
+
+    if (attack.onUpdate) {
+      attack.onUpdate(attack, delta);
+    }
+
     attack.mesh.rotation.x += attack.spin.x * delta;
     attack.mesh.rotation.y += attack.spin.y * delta;
     attack.mesh.rotation.z += attack.spin.z * delta;
 
     if (attack.life <= 0 || attack.mesh.position.distanceToSquared(camera.position) > 40000) {
+      if (attack.cleanup) {
+        attack.cleanup(attack);
+      }
       scene.remove(attack.mesh);
       bossAttacks.splice(i, 1);
       continue;
@@ -1191,6 +1244,9 @@ function updateBossAttacks(delta) {
 
     if (!victoryAchieved && !defeat) {
       if (attack.mesh.position.distanceTo(camera.position) <= PLAYER_HIT_RADIUS) {
+        if (attack.cleanup) {
+          attack.cleanup(attack);
+        }
         scene.remove(attack.mesh);
         bossAttacks.splice(i, 1);
         applyPlayerDamage(attack.damage);
@@ -1340,24 +1396,596 @@ function shootHomingShards() {
   setTimeout(() => scene.remove(glow), 260);
 }
 
-function performBossAttack() {
-  if (!gameActive || victoryAchieved || defeat || bossStunned) return;
-  switch (bossAttackPattern) {
-    case 0:
-      shootFocusedVolley();
-      break;
-    case 1:
-      shootCrystalSpread();
-      break;
-    case 2:
-      shootRadialVolley();
-      break;
-    default:
-      shootHomingShards();
-      break;
+function launchSingleStrike() {
+  if (!boss) return;
+  const origin = new THREE.Vector3(boss.position.x, boss.position.y + 5.2, boss.position.z);
+  const projectile = new THREE.Mesh(
+    new THREE.SphereGeometry(1, 16, 16),
+    new THREE.MeshBasicMaterial({ color: 0xff00ff, transparent: true, opacity: 0.85 })
+  );
+  projectile.position.copy(origin);
+  tmpVecA.subVectors(camera.position, origin).normalize();
+  tmpVecA.x += THREE.MathUtils.randFloatSpread(0.2);
+  tmpVecA.y += THREE.MathUtils.randFloatSpread(0.15);
+  tmpVecA.normalize();
+  registerBossAttack(projectile, tmpVecA.multiplyScalar(22), {
+    life: 4.5,
+    spin: new THREE.Vector3(
+      THREE.MathUtils.randFloat(-2.5, 2.5),
+      THREE.MathUtils.randFloat(-2.5, 2.5),
+      THREE.MathUtils.randFloat(-2.5, 2.5)
+    )
+  });
+  const light = new THREE.PointLight(0xff00ff, 12, 26);
+  light.position.copy(origin);
+  scene.add(light);
+  setTimeout(() => scene.remove(light), 240);
+}
+
+function launchTripleScatter() {
+  if (!boss) return;
+  for (let i = 0; i < 3; i++) {
+    setTimeout(() => {
+      if (!boss || !gameActive || victoryAchieved || defeat) return;
+      const muzzle = new THREE.Vector3(boss.position.x, boss.position.y + 6.2, boss.position.z);
+      const bolt = new THREE.Mesh(
+        new THREE.ConeGeometry(0.6, 2.2, 14),
+        new THREE.MeshBasicMaterial({ color: 0xff8800, transparent: true, opacity: 0.95 })
+      );
+      bolt.position.copy(muzzle);
+      const direction = new THREE.Vector3();
+      direction.subVectors(camera.position, muzzle).normalize();
+      direction.x += THREE.MathUtils.randFloatSpread(0.3);
+      direction.y += THREE.MathUtils.randFloatSpread(0.2);
+      direction.normalize();
+      const velocity = direction.multiplyScalar(24);
+      bolt.lookAt(camera.position);
+      bolt.rotateX(Math.PI / 2);
+      registerBossAttack(bolt, velocity, {
+        life: 4.2,
+        alignToVelocity: true,
+        spin: new THREE.Vector3(
+          THREE.MathUtils.randFloat(-1.2, 1.2),
+          THREE.MathUtils.randFloat(-0.6, 0.6),
+          THREE.MathUtils.randFloat(-1.2, 1.2)
+        )
+      });
+    }, i * 160);
   }
-  bossAttackPattern = (bossAttackPattern + 1) % 4;
-  attackCooldownTimer = THREE.MathUtils.randFloat(BOSS_ATTACK_COOLDOWN_MIN, BOSS_ATTACK_COOLDOWN_MAX);
+  return { cooldown: THREE.MathUtils.randFloat(1.2, 1.8) };
+}
+
+function launchCircularBarrage() {
+  if (!boss) return;
+  const origin = new THREE.Vector3(boss.position.x, boss.position.y + 4.8, boss.position.z);
+  const bulletCount = 12;
+  for (let i = 0; i < bulletCount; i++) {
+    const angle = (i / bulletCount) * Math.PI * 2;
+    const shard = new THREE.Mesh(
+      new THREE.OctahedronGeometry(0.6, 0),
+      new THREE.MeshBasicMaterial({ color: 0x00ff99, transparent: true, opacity: 0.85 })
+    );
+    shard.position.copy(origin);
+    const direction = new THREE.Vector3(Math.cos(angle), 0, Math.sin(angle));
+    registerBossAttack(shard, direction.multiplyScalar(18), {
+      life: 5,
+      spin: new THREE.Vector3(
+        THREE.MathUtils.randFloat(-2, 2),
+        THREE.MathUtils.randFloat(-2, 2),
+        THREE.MathUtils.randFloat(-2, 2)
+      )
+    });
+  }
+  const light = new THREE.PointLight(0x00ff99, 16, 32);
+  light.position.copy(origin);
+  scene.add(light);
+  setTimeout(() => scene.remove(light), 300);
+  return { cooldown: THREE.MathUtils.randFloat(1.1, 1.6) };
+}
+
+function launchPiercingLaser() {
+  if (!boss) return;
+  const origin = new THREE.Vector3(boss.position.x, boss.position.y + 5.4, boss.position.z);
+  const laserGeometry = new THREE.CylinderGeometry(0.35, 0.35, 26, 16, 1, true);
+  const laserMaterial = new THREE.MeshBasicMaterial({ color: 0x66faff, transparent: true, opacity: 0.85, side: THREE.DoubleSide });
+  const laser = new THREE.Mesh(laserGeometry, laserMaterial);
+  laser.position.copy(origin);
+  const direction = new THREE.Vector3();
+  direction.subVectors(camera.position, origin).normalize();
+  const quaternion = new THREE.Quaternion();
+  quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
+  laser.quaternion.copy(quaternion);
+  const velocity = direction.clone().multiplyScalar(38);
+  const light = new THREE.PointLight(0x66faff, 18, 40);
+  light.position.copy(origin);
+  scene.add(light);
+  registerBossAttack(laser, velocity, {
+    life: 3.2,
+    alignToVelocity: true,
+    speedDamping: 0.06,
+    damage: 2,
+    onUpdate: (attack) => {
+      if (attack.mesh.material && attack.mesh.material.opacity !== undefined) {
+        attack.mesh.material.opacity = Math.max(0.25, attack.life / 3.2);
+      }
+      light.position.copy(attack.mesh.position);
+    },
+    cleanup: () => {
+      scene.remove(light);
+    }
+  });
+  return { cooldown: THREE.MathUtils.randFloat(1.6, 2.3) };
+}
+
+function startTauntSequence() {
+  if (!boss || bossTaunting) {
+    return { cooldown: THREE.MathUtils.randFloat(BOSS_ATTACK_COOLDOWN_MIN, BOSS_ATTACK_COOLDOWN_MAX) };
+  }
+  bossTaunting = true;
+  bossTauntTimer = BOSS_TAUNT_DURATION;
+  bossTauntPhase = 0;
+  bossTauntPulseTimer = 0;
+  const tauntLight = new THREE.PointLight(0xffff66, 26, 44);
+  tauntLight.position.copy(boss.position);
+  scene.add(tauntLight);
+  setTimeout(() => scene.remove(tauntLight), 520);
+  spawnTauntParticles(56);
+  return { cooldown: BOSS_TAUNT_COOLDOWN };
+}
+
+// Battle.html style attack patterns
+function launchBattleStyleSingle() {
+  if (!boss) return;
+  const origin = new THREE.Vector3(boss.position.x, boss.position.y + 5, boss.position.z);
+  const projectile = new THREE.Mesh(
+    new THREE.SphereGeometry(1, 16, 16),
+    new THREE.MeshBasicMaterial({ 
+      color: 0xff00ff, 
+      transparent: true, 
+      opacity: 0.8 
+    })
+  );
+  projectile.position.copy(origin);
+  tmpVecA.subVectors(camera.position, origin).normalize();
+  tmpVecA.x += (Math.random() - 0.5) * 0.2;
+  tmpVecA.y += (Math.random() - 0.5) * 0.2;
+  tmpVecA.normalize();
+  registerBossAttack(projectile, tmpVecA.multiplyScalar(20), {
+    life: 4,
+    spin: new THREE.Vector3(
+      THREE.MathUtils.randFloat(-3, 3),
+      THREE.MathUtils.randFloat(-3, 3),
+      THREE.MathUtils.randFloat(-3, 3)
+    )
+  });
+  const light = new THREE.PointLight(0xff00ff, 10, 20);
+  light.position.copy(origin);
+  scene.add(light);
+  setTimeout(() => scene.remove(light), 200);
+  return { cooldown: THREE.MathUtils.randFloat(1.0, 1.5) };
+}
+
+function launchBattleStyleTriple() {
+  if (!boss) return;
+  const origin = new THREE.Vector3(boss.position.x, boss.position.y + 8, boss.position.z);
+  for (let i = 0; i < 3; i++) {
+    setTimeout(() => {
+      if (!boss || !gameActive || victoryAchieved || defeat) return;
+      const projectile = new THREE.Mesh(
+        new THREE.ConeGeometry(0.5, 2, 8),
+        new THREE.MeshBasicMaterial({ 
+          color: 0xff8800, 
+          transparent: true, 
+          opacity: 0.9 
+        })
+      );
+      projectile.position.copy(origin);
+      const direction = new THREE.Vector3();
+      direction.subVectors(camera.position, origin).normalize();
+      direction.x += (Math.random() - 0.5) * 0.3;
+      direction.normalize();
+      const velocity = direction.multiplyScalar(25);
+      projectile.lookAt(camera.position);
+      registerBossAttack(projectile, velocity, {
+        life: 4,
+        alignToVelocity: true,
+        spin: new THREE.Vector3(
+          THREE.MathUtils.randFloat(-2, 2),
+          THREE.MathUtils.randFloat(-1, 1),
+          THREE.MathUtils.randFloat(-2, 2)
+        )
+      });
+    }, i * 200);
+  }
+  return { cooldown: THREE.MathUtils.randFloat(1.2, 1.8) };
+}
+
+function launchBattleStyleCircular() {
+  if (!boss) return;
+  const origin = new THREE.Vector3(boss.position.x, boss.position.y + 5, boss.position.z);
+  const bulletCount = 12;
+  for (let i = 0; i < bulletCount; i++) {
+    const angle = (i / bulletCount) * Math.PI * 2;
+    const projectile = new THREE.Mesh(
+      new THREE.OctahedronGeometry(0.6, 0),
+      new THREE.MeshBasicMaterial({ 
+        color: 0x00ff00, 
+        transparent: true, 
+        opacity: 0.8 
+      })
+    );
+    projectile.position.copy(origin);
+    const direction = new THREE.Vector3(Math.cos(angle), 0, Math.sin(angle));
+    registerBossAttack(projectile, direction.multiplyScalar(15), {
+      life: 5,
+      spin: new THREE.Vector3(
+        THREE.MathUtils.randFloat(-2, 2),
+        THREE.MathUtils.randFloat(-2, 2),
+        THREE.MathUtils.randFloat(-2, 2)
+      )
+    });
+  }
+  const light = new THREE.PointLight(0x00ff00, 20, 30);
+  light.position.copy(origin);
+  scene.add(light);
+  setTimeout(() => scene.remove(light), 300);
+  return { cooldown: THREE.MathUtils.randFloat(1.5, 2.0) };
+}
+
+function launchBattleStyleLaser() {
+  if (!boss) return;
+  const origin = new THREE.Vector3(boss.position.x, boss.position.y + 5, boss.position.z);
+  const laserGeometry = new THREE.CylinderGeometry(0.3, 0.3, 50, 8);
+  const laserMaterial = new THREE.MeshBasicMaterial({
+    color: 0x00ffff,
+    transparent: true,
+    opacity: 0.9
+  });
+  const laser = new THREE.Mesh(laserGeometry, laserMaterial);
+  laser.position.copy(origin);
+  const direction = new THREE.Vector3();
+  direction.subVectors(camera.position, origin).normalize();
+  const quaternion = new THREE.Quaternion();
+  quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
+  laser.quaternion.copy(quaternion);
+  const velocity = direction.clone().multiplyScalar(40);
+  const light = new THREE.PointLight(0x00ffff, 30, 40);
+  light.position.copy(origin);
+  scene.add(light);
+  registerBossAttack(laser, velocity, {
+    life: 3.2,
+    alignToVelocity: true,
+    speedDamping: 0.06,
+    damage: 2,
+    onUpdate: (attack) => {
+      if (attack.mesh.material && attack.mesh.material.opacity !== undefined) {
+        attack.mesh.material.opacity = Math.max(0.25, attack.life / 3.2);
+      }
+      light.position.copy(attack.mesh.position);
+    },
+    cleanup: () => {
+      scene.remove(light);
+    }
+  });
+  return { cooldown: THREE.MathUtils.randFloat(2.0, 2.5) };
+}
+
+function launchBattleStyleTaunt() {
+  if (!boss || bossTaunting) {
+    return { cooldown: THREE.MathUtils.randFloat(BOSS_ATTACK_COOLDOWN_MIN, BOSS_ATTACK_COOLDOWN_MAX) };
+  }
+  bossTaunting = true;
+  bossTauntTimer = 3.0;
+  bossTauntPhase = 0;
+  bossTauntPulseTimer = 0;
+  
+  const tauntStartLight = new THREE.PointLight(0xffff00, 30, 50);
+  tauntStartLight.position.copy(boss.position);
+  scene.add(tauntStartLight);
+  setTimeout(() => scene.remove(tauntStartLight), 500);
+  
+  // Spawn taunt particles
+  const particleCount = 50;
+  for (let i = 0; i < particleCount; i++) {
+    const particle = new THREE.Mesh(
+      new THREE.SphereGeometry(0.3, 8, 8),
+      new THREE.MeshBasicMaterial({
+        color: 0xffff00,
+        transparent: true,
+        opacity: 0.8
+      })
+    );
+    particle.position.copy(boss.position);
+    const angle = (i / particleCount) * Math.PI * 2;
+    const speed = 10 + Math.random() * 10;
+    const velocity = new THREE.Vector3(
+      Math.cos(angle) * speed,
+      Math.random() * 10 - 5,
+      Math.sin(angle) * speed
+    );
+    particle.material.depthWrite = false;
+    scene.add(particle);
+    bossTauntParticles.push({
+      mesh: particle,
+      velocity,
+      life: 1.2 + Math.random() * 0.6
+    });
+  }
+  
+  // After taunt, launch powerful burst attack
+  setTimeout(() => {
+    if (gameActive && !victoryAchieved && !defeat) {
+      const bulletCount = 20;
+      const burstOrigin = new THREE.Vector3(boss.position.x, boss.position.y + 5, boss.position.z);
+      for (let i = 0; i < bulletCount; i++) {
+        const angle = (i / bulletCount) * Math.PI * 2;
+        const burstProjectile = new THREE.Mesh(
+          new THREE.SphereGeometry(1.2, 16, 16),
+          new THREE.MeshBasicMaterial({
+            color: 0xff00ff,
+            transparent: true,
+            opacity: 0.9
+          })
+        );
+        burstProjectile.position.copy(burstOrigin);
+        const direction = new THREE.Vector3(
+          Math.cos(angle),
+          (Math.random() - 0.5) * 0.5,
+          Math.sin(angle)
+        );
+        registerBossAttack(burstProjectile, direction.multiplyScalar(20), {
+          life: 4.5,
+          spin: new THREE.Vector3(
+            THREE.MathUtils.randFloat(-3, 3),
+            THREE.MathUtils.randFloat(-3, 3),
+            THREE.MathUtils.randFloat(-3, 3)
+          )
+        });
+      }
+      const burstLight = new THREE.PointLight(0xff00ff, 40, 50);
+      burstLight.position.copy(burstOrigin);
+      scene.add(burstLight);
+      setTimeout(() => scene.remove(burstLight), 500);
+    }
+    // Reset taunting state after burst attack
+    bossTaunting = false;
+    bossTauntTimer = 0;
+    bossTauntPhase = 0;
+    bossTauntPulseTimer = 0;
+  }, 3300);
+  
+  return { cooldown: 4.0 };
+}
+
+// Additional advanced attack patterns
+function launchAdvancedHoming() {
+  if (!boss) return;
+  const origin = new THREE.Vector3(boss.position.x, boss.position.y + 3.2, boss.position.z);
+  for (let i = 0; i < 5; i++) {
+    const projectile = new THREE.Mesh(
+      new THREE.TetrahedronGeometry(0.9, 0),
+      new THREE.MeshBasicMaterial({ 
+        color: 0xffff66, 
+        transparent: true, 
+        opacity: 0.85 
+      })
+    );
+    projectile.position.copy(origin);
+    const dir = new THREE.Vector3(
+      THREE.MathUtils.randFloatSpread(0.6),
+      THREE.MathUtils.randFloat(-0.1, 0.4),
+      THREE.MathUtils.randFloatSpread(0.6)
+    ).normalize();
+    registerBossAttack(projectile, dir.multiplyScalar(12), {
+      life: 5,
+      spin: new THREE.Vector3(
+        THREE.MathUtils.randFloat(-5, 5),
+        THREE.MathUtils.randFloat(-5, 5),
+        THREE.MathUtils.randFloat(-5, 5)
+      ),
+      homing: true
+    });
+  }
+  const glow = new THREE.PointLight(0xffff66, 12, 28);
+  glow.position.copy(origin);
+  scene.add(glow);
+  setTimeout(() => scene.remove(glow), 260);
+  return { cooldown: THREE.MathUtils.randFloat(1.8, 2.2) };
+}
+
+function launchSpeedVariableAttack() {
+  if (!boss) return;
+  const origin = new THREE.Vector3(boss.position.x, boss.position.y + 4, boss.position.z);
+  for (let i = 0; i < 8; i++) {
+    const angle = (i / 8) * Math.PI * 2;
+    const projectile = new THREE.Mesh(
+      new THREE.SphereGeometry(0.8, 12, 12),
+      new THREE.MeshBasicMaterial({ 
+        color: 0xff6600, 
+        transparent: true, 
+        opacity: 0.9 
+      })
+    );
+    projectile.position.copy(origin);
+    const direction = new THREE.Vector3(Math.cos(angle), 0, Math.sin(angle));
+    const initialSpeed = 25 + Math.random() * 10;
+    registerBossAttack(projectile, direction.multiplyScalar(initialSpeed), {
+      life: 4,
+      speedDamping: 0.8,
+      spin: new THREE.Vector3(
+        THREE.MathUtils.randFloat(-4, 4),
+        THREE.MathUtils.randFloat(-4, 4),
+        THREE.MathUtils.randFloat(-4, 4)
+      ),
+      onUpdate: (attack) => {
+        // Speed up after slowing down
+        if (attack.life < 2) {
+          attack.velocity.multiplyScalar(1.05);
+        }
+      }
+    });
+  }
+  const light = new THREE.PointLight(0xff6600, 15, 25);
+  light.position.copy(origin);
+  scene.add(light);
+  setTimeout(() => scene.remove(light), 300);
+  return { cooldown: THREE.MathUtils.randFloat(1.6, 2.1) };
+}
+
+function launchSpiralBarrage() {
+  if (!boss) return;
+  const origin = new THREE.Vector3(boss.position.x, boss.position.y + 6, boss.position.z);
+  let spiralAngle = 0;
+  for (let i = 0; i < 15; i++) {
+    setTimeout(() => {
+      if (!boss || !gameActive || victoryAchieved || defeat) return;
+      const projectile = new THREE.Mesh(
+        new THREE.OctahedronGeometry(0.5, 0),
+        new THREE.MeshBasicMaterial({ 
+          color: 0x00ccff, 
+          transparent: true, 
+          opacity: 0.8 
+        })
+      );
+      projectile.position.copy(origin);
+      const radius = 0.8 + (i * 0.1);
+      const direction = new THREE.Vector3(
+        Math.cos(spiralAngle) * radius,
+        -0.2,
+        Math.sin(spiralAngle) * radius
+      ).normalize();
+      registerBossAttack(projectile, direction.multiplyScalar(22), {
+        life: 4.2,
+        spin: new THREE.Vector3(
+          THREE.MathUtils.randFloat(-6, 6),
+          THREE.MathUtils.randFloat(-6, 6),
+          THREE.MathUtils.randFloat(-6, 6)
+        )
+      });
+      spiralAngle += 0.8;
+    }, i * 100);
+  }
+  return { cooldown: THREE.MathUtils.randFloat(2.2, 2.8) };
+}
+
+function launchWaveAttack() {
+  if (!boss) return;
+  const origin = new THREE.Vector3(boss.position.x, boss.position.y + 2, boss.position.z);
+  for (let wave = 0; wave < 3; wave++) {
+    setTimeout(() => {
+      if (!boss || !gameActive || victoryAchieved || defeat) return;
+      const waveCount = 8;
+      for (let i = 0; i < waveCount; i++) {
+        const angle = (i / waveCount) * Math.PI * 2;
+        const projectile = new THREE.Mesh(
+          new THREE.SphereGeometry(0.7, 10, 10),
+          new THREE.MeshBasicMaterial({ 
+            color: wave === 0 ? 0xff0088 : wave === 1 ? 0x8800ff : 0x0088ff, 
+            transparent: true, 
+            opacity: 0.85 
+          })
+        );
+        projectile.position.copy(origin);
+        const direction = new THREE.Vector3(
+          Math.cos(angle + wave * 0.3),
+          0,
+          Math.sin(angle + wave * 0.3)
+        );
+        const speed = 18 - wave * 2;
+        registerBossAttack(projectile, direction.multiplyScalar(speed), {
+          life: 4.5,
+          spin: new THREE.Vector3(
+            THREE.MathUtils.randFloat(-3, 3),
+            THREE.MathUtils.randFloat(-3, 3),
+            THREE.MathUtils.randFloat(-3, 3)
+          )
+        });
+      }
+      const waveLight = new THREE.PointLight(
+        wave === 0 ? 0xff0088 : wave === 1 ? 0x8800ff : 0x0088ff, 
+        20, 35
+      );
+      waveLight.position.copy(origin);
+      scene.add(waveLight);
+      setTimeout(() => scene.remove(waveLight), 250);
+    }, wave * 600);
+  }
+  return { cooldown: THREE.MathUtils.randFloat(2.5, 3.2) };
+}
+
+function spawnTauntParticles(count = 48) {
+  if (!boss) return;
+  for (let i = 0; i < count; i++) {
+    const particle = new THREE.Mesh(
+      new THREE.SphereGeometry(0.24, 8, 8),
+      new THREE.MeshBasicMaterial({ color: 0xffff66, transparent: true, opacity: 0.9 })
+    );
+    particle.position.set(boss.position.x, boss.position.y + 1.8, boss.position.z);
+    const angle = (i / count) * Math.PI * 2;
+    const speed = THREE.MathUtils.randFloat(6, 12);
+    const velocity = new THREE.Vector3(
+      Math.cos(angle) * speed,
+      THREE.MathUtils.randFloat(-3, 5),
+      Math.sin(angle) * speed
+    );
+    particle.material.depthWrite = false;
+    scene.add(particle);
+    bossTauntParticles.push({
+      mesh: particle,
+      velocity,
+      life: 1.2 + Math.random() * 0.6
+    });
+  }
+}
+
+const bossAttackBehaviors = [
+  launchSingleStrike,
+  launchTripleScatter,
+  launchCircularBarrage,
+  launchPiercingLaser,
+  startTauntSequence,
+  shootFocusedVolley,
+  shootCrystalSpread,
+  shootRadialVolley,
+  shootHomingShards,
+  // Battle.html style attacks
+  launchBattleStyleSingle,
+  launchBattleStyleTriple,
+  launchBattleStyleCircular,
+  launchBattleStyleLaser,
+  launchBattleStyleTaunt,
+  // Advanced attack patterns
+  launchAdvancedHoming,
+  launchSpeedVariableAttack,
+  launchSpiralBarrage,
+  launchWaveAttack
+];
+
+function performBossAttack() {
+  if (!gameActive || victoryAchieved || defeat || bossStunned || bossTaunting) return;
+  if (bossAttackBehaviors.length === 0) return;
+  
+  // Mix sequential and random selection for more variety
+  let index;
+  if (Math.random() < 0.7) {
+    // 70% chance for sequential pattern
+    index = bossAttackPattern % bossAttackBehaviors.length;
+    bossAttackPattern = (index + 1) % bossAttackBehaviors.length;
+  } else {
+    // 30% chance for random selection
+    index = Math.floor(Math.random() * bossAttackBehaviors.length);
+  }
+  
+  const attackFn = bossAttackBehaviors[index];
+  if (typeof attackFn !== "function") {
+    bossAttackPattern = 0;
+    return;
+  }
+  const result = attackFn();
+  const nextCooldown = result && typeof result.cooldown === "number"
+    ? result.cooldown
+    : THREE.MathUtils.randFloat(BOSS_ATTACK_COOLDOWN_MIN, BOSS_ATTACK_COOLDOWN_MAX);
+  attackCooldownTimer = nextCooldown;
 }
 
 
@@ -1366,6 +1994,17 @@ function updateBossBehavior(delta) {
   bossTime += delta;
   bossMoveTimer += delta;
   bossHitReaction = Math.max(0, bossHitReaction - delta * 1.5);
+
+  // 挑発状態の管理
+  if (bossTaunting) {
+    bossTauntTimer -= delta;
+    if (bossTauntTimer <= 0) {
+      bossTaunting = false;
+      bossTauntTimer = 0;
+      bossTauntPhase = 0;
+      bossTauntPulseTimer = 0;
+    }
+  }
 
   // 停止状態の管理
   if (bossStunned) {
@@ -1856,6 +2495,25 @@ renderer.setAnimationLoop(() => {
   updateBossAttacks(delta);
   updateBossHitEffects(delta);
   updateBossDeath(delta);
+  
+  // Update taunt particles
+  for (let i = bossTauntParticles.length - 1; i >= 0; i--) {
+    const particle = bossTauntParticles[i];
+    particle.life -= delta;
+    if (particle.mesh) {
+      particle.mesh.position.addScaledVector(particle.velocity, delta);
+      particle.velocity.multiplyScalar(0.98);
+      particle.velocity.y -= delta * 5;
+      if (particle.mesh.material) {
+        particle.mesh.material.opacity = Math.max(0, particle.life / 1.8);
+      }
+      if (particle.life <= 0) {
+        scene.remove(particle.mesh);
+        bossTauntParticles.splice(i, 1);
+      }
+    }
+  }
+  
   renderer.render(scene, camera);
 });
 
