@@ -8,10 +8,6 @@
     html, body { height: 100%; margin: 0; background: #000; overflow: hidden; }
     canvas { width: 100%; height: 100%; display: block; }
     #loading { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; color: #fff; font-family: system-ui, sans-serif; letter-spacing: 0.12em; text-transform: uppercase; z-index: 10; }
-    #gyroPermission { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.78); color: #fff; font-family: system-ui, sans-serif; letter-spacing: 0.08em; text-transform: uppercase; text-align: center; padding: 32px; z-index: 9; }
-    #gyroPermission > div { max-width: 320px; }
-    #gyroPermission button { margin-top: 20px; padding: 10px 28px; border: 1px solid rgba(255, 255, 255, 0.7); background: transparent; color: #fff; font-size: 0.82rem; letter-spacing: 0.12em; cursor: pointer; }
-    #gyroPermission button:active { background: rgba(255, 255, 255, 0.1); }
     #scoreDisplay { position: fixed; top: 24px; left: 24px; color: #fff; font-family: system-ui, sans-serif; letter-spacing: 0.08em; font-size: 0.9rem; text-transform: uppercase; z-index: 8; pointer-events: none; transition: color 0.15s ease, text-shadow 0.15s ease; }
     #scoreDisplay.damage { color: #ff6f91; text-shadow: 0 0 12px rgba(255, 127, 159, 0.8); }
     #crosshair { position: fixed; top: 50%; left: 50%; width: 28px; height: 28px; transform: translate(-50%, -50%); pointer-events: none; z-index: 8; opacity: 0.7; }
@@ -119,12 +115,6 @@
 </head>
 <body>
   <div id="loading">Loading...</div>
-  <div id="gyroPermission">
-    <div>
-      <p>Enable gyroscope aim for mobile.</p>
-      <button id="requestGyro">Enable Gyro</button>
-    </div>
-  </div>
   <div id="scoreDisplay">Press START to begin</div>
   <div id="centerDisplay"></div>
   <button id="startButton">START</button>
@@ -201,8 +191,6 @@ let pitch = cameraEuler.x;
 let yaw = cameraEuler.y;
 
 const isMobile = /Android|iPhone|iPad|iPod|Mobi/i.test(navigator.userAgent);
-const gyroPermissionEl = document.getElementById("gyroPermission");
-const requestGyroButton = document.getElementById("requestGyro");
 const mobileUI = document.getElementById("mobileUI");
 const moveJoystick = document.getElementById("moveJoystick");
 const moveStick = document.getElementById("moveStick");
@@ -212,9 +200,6 @@ const scoreDisplay = document.getElementById("scoreDisplay");
 const centerDisplay = document.getElementById("centerDisplay");
 const crosshair = document.getElementById("crosshair");
 
-let gyroControls = null;
-let gyroActive = false;
-let isGyroAvailable = false;
 let pointerLocked = false;
 let moveJoystickData = { x: 0, y: 0 };
 let touchLookActive = false;
@@ -304,7 +289,7 @@ function showStartButton(label) {
     document.exitPointerLock();
   }
   pointerLocked = false;
-  renderer.domElement.style.cursor = gyroActive ? "auto" : "grab";
+  renderer.domElement.style.cursor = "grab";
 }
 
 function updateHud() {
@@ -2274,85 +2259,7 @@ splat.position.set(0, -1.2, -8);
 splat.rotation.set(Math.PI, 0, 0);
 scene.add(splat);
 
-function createGyroControls() {
-  const deviceOrientation = { alpha: null, beta: null, gamma: null };
-  let screenOrientation = window.orientation || 0;
-  const zee = new THREE.Vector3(0, 0, 1);
-  const euler = new THREE.Euler();
-  const q0 = new THREE.Quaternion();
-  const q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5));
 
-  const onDeviceOrientationChangeEvent = (event) => {
-    deviceOrientation.alpha = event.alpha;
-    deviceOrientation.beta = event.beta;
-    deviceOrientation.gamma = event.gamma;
-  };
-
-  const onScreenOrientationChangeEvent = () => {
-    screenOrientation = window.orientation || 0;
-  };
-
-  return {
-    connect() {
-      onScreenOrientationChangeEvent();
-      window.addEventListener("orientationchange", onScreenOrientationChangeEvent);
-      window.addEventListener("deviceorientation", onDeviceOrientationChangeEvent);
-    },
-    disconnect() {
-      window.removeEventListener("orientationchange", onScreenOrientationChangeEvent);
-      window.removeEventListener("deviceorientation", onDeviceOrientationChangeEvent);
-    },
-    update() {
-      if (deviceOrientation.alpha === null && deviceOrientation.beta === null && deviceOrientation.gamma === null) {
-        return;
-      }
-      const alpha = deviceOrientation.alpha !== null ? THREE.MathUtils.degToRad(deviceOrientation.alpha) : 0;
-      const beta = deviceOrientation.beta !== null ? THREE.MathUtils.degToRad(deviceOrientation.beta) : 0;
-      const gamma = deviceOrientation.gamma !== null ? THREE.MathUtils.degToRad(deviceOrientation.gamma) : 0;
-      const orient = THREE.MathUtils.degToRad(screenOrientation);
-      euler.set(beta, alpha, -gamma, "YXZ");
-      camera.quaternion.setFromEuler(euler);
-      camera.quaternion.multiply(q1);
-      camera.quaternion.multiply(q0.setFromAxisAngle(zee, -orient));
-      cameraEuler.setFromQuaternion(camera.quaternion);
-      pitch = cameraEuler.x;
-      yaw = cameraEuler.y;
-    }
-  };
-}
-
-async function setupGyroscope() {
-  if (!isMobile || gyroActive || typeof DeviceOrientationEvent === "undefined") {
-    return false;
-  }
-  if (typeof DeviceOrientationEvent.requestPermission === "function") {
-    try {
-      const permission = await DeviceOrientationEvent.requestPermission();
-      if (permission !== "granted") {
-        return false;
-      }
-    } catch (error) {
-      console.error("Failed to enable gyroscope:", error);
-      return false;
-    }
-  }
-  if (!gyroControls) {
-    gyroControls = createGyroControls();
-    gyroControls.connect();
-  }
-  gyroActive = true;
-  isGyroAvailable = true;
-  touchLookActive = false;
-  if (document.pointerLockElement) {
-    document.exitPointerLock();
-  }
-  pointerLocked = false;
-  renderer.domElement.style.cursor = "auto";
-  if (gyroPermissionEl) {
-    gyroPermissionEl.style.display = "none";
-  }
-  return true;
-}
 
 function setupJoystick(container, stick, callback) {
   let active = false;
@@ -2415,7 +2322,7 @@ function setupJoystick(container, stick, callback) {
 }
 
 function onTouchStartLook(event) {
-  if (!isMobile || gyroActive) return;
+  if (!isMobile) return;
   if (event.target && typeof event.target.closest === "function") {
     if (event.target.closest("#moveJoystick") || event.target.closest("#shootButton")) {
       return;
@@ -2430,7 +2337,7 @@ function onTouchStartLook(event) {
 }
 
 function onTouchMoveLook(event) {
-  if (!touchLookActive || gyroActive) return;
+  if (!touchLookActive) return;
   const touch = event.touches && event.touches[0];
   if (!touch) return;
   const deltaX = touch.clientX - lastTouchX;
@@ -2448,22 +2355,7 @@ function onTouchEndLook() {
   touchLookActive = false;
 }
 
-if (requestGyroButton) {
-  requestGyroButton.addEventListener("click", async () => {
-    const enabled = await setupGyroscope();
-    if (!enabled && gyroPermissionEl) {
-      gyroPermissionEl.style.display = "flex";
-    }
-  });
-}
 
-if (isMobile && gyroPermissionEl && typeof DeviceOrientationEvent !== "undefined") {
-  if (typeof DeviceOrientationEvent.requestPermission === "function") {
-    gyroPermissionEl.style.display = "flex";
-  } else {
-    setupGyroscope();
-  }
-}
 
 if (isMobile) {
   if (mobileUI) mobileUI.style.display = "block";
@@ -2481,7 +2373,7 @@ renderer.domElement.addEventListener("touchend", onTouchEndLook);
 renderer.domElement.addEventListener("touchcancel", onTouchEndLook);
 
 document.addEventListener("mousemove", (event) => {
-  if (!pointerLocked || gyroActive) return;
+  if (!pointerLocked) return;
   yaw -= event.movementX * POINTER_SENSITIVITY;
   pitch -= event.movementY * POINTER_SENSITIVITY;
   pitch = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, pitch));
@@ -2501,8 +2393,8 @@ if (shootButton) {
 if (startButton) {
   const triggerStartBattle = () => {
     if (gameActive) return;
-    if (!isMobile && !gyroActive) {
-      // ?|?C???^?[???b?N??v???O?????`?F?b?N
+    if (!isMobile) {
+      // ポインターロック要求の動的チェック
       if (!document.pointerLockElement) {
         renderer.domElement.requestPointerLock().catch((err) => {
           console.warn('Pointer lock request failed:', err);
@@ -2523,20 +2415,20 @@ if (startButton) {
 
 
 document.addEventListener("mousedown", (event) => {
-  if (event.button === 0 && !isMobile && !gyroActive && pointerLocked) {
+  if (event.button === 0 && !isMobile && pointerLocked) {
     shoot();
   }
 });
 
 renderer.domElement.addEventListener("click", () => {
-  if (gyroActive || isMobile) return;
+  if (isMobile) return;
   if (!pointerLocked) {
-    // ?|?C???^?[???b?N??v???O?????`?F?b?N
+    // ポインターロック要求の動的チェック
     if (document.pointerLockElement) {
-      return; // ???????v?f?????b?N??????????????????
+      return; // 既に他の要素がロックされている場合は何もしない
     }
     renderer.domElement.requestPointerLock().catch((err) => {
-      // SecurityError????A??????
+      // SecurityErrorが発生する場合、何もしない
       console.warn('Pointer lock request failed:', err);
     });
   }
@@ -2544,13 +2436,13 @@ renderer.domElement.addEventListener("click", () => {
 
 document.addEventListener("pointerlockchange", () => {
   pointerLocked = document.pointerLockElement === renderer.domElement;
-  renderer.domElement.style.cursor = pointerLocked ? "none" : (gyroActive ? "auto" : "grab");
+  renderer.domElement.style.cursor = pointerLocked ? "none" : "grab";
 });
 
 document.addEventListener("pointerlockerror", (event) => {
   console.warn("Pointer lock error:", event);
   pointerLocked = false;
-  renderer.domElement.style.cursor = gyroActive ? "auto" : "grab";
+  renderer.domElement.style.cursor = "grab";
 });
 
 setBossTargetAroundPlayer();
@@ -2560,9 +2452,6 @@ showStartButton();
 
 renderer.setAnimationLoop(() => {
   const delta = clock.getDelta();
-  if (gyroActive && gyroControls && isGyroAvailable) {
-    gyroControls.update();
-  }
   if (shootCooldownTimer > 0) {
     shootCooldownTimer = Math.max(0, shootCooldownTimer - delta);
   }
