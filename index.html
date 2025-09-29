@@ -244,11 +244,12 @@ let bossEnergyRings = [];
 let bossShoulders = [];
 let bossWings = [];
 let bossWeakPointGlow = 0;
+const bossCenterPosition = new THREE.Vector3(0, BOSS_BASE_HEIGHT, -32);
 const bossTargetOffset = new THREE.Vector3(0, 0, -32);
 const bossTargetPosition = new THREE.Vector3(
-  camera.position.x + bossTargetOffset.x,
+  bossCenterPosition.x + bossTargetOffset.x,
   BOSS_BASE_HEIGHT,
-  camera.position.z + bossTargetOffset.z
+  bossCenterPosition.z + bossTargetOffset.z
 );
 
 const clock = new THREE.Clock();
@@ -263,10 +264,11 @@ const tmpVecA = new THREE.Vector3();
 const tmpVecB = new THREE.Vector3();
 
 function updateBossTargetPositionFromPlayer() {
+  // Now independent from the player's position; use a fixed boss center
   bossTargetPosition.set(
-    camera.position.x + bossTargetOffset.x,
+    bossCenterPosition.x + bossTargetOffset.x,
     BOSS_BASE_HEIGHT,
-    camera.position.z + bossTargetOffset.z
+    bossCenterPosition.z + bossTargetOffset.z
   );
 }
 
@@ -1212,6 +1214,9 @@ function startBattle() {
   hideStartButton();
   hideCenterDisplay();
   
+  // Fix the boss center to the position at battle start (stop following player movement)
+  bossCenterPosition.set(camera.position.x, BOSS_BASE_HEIGHT, camera.position.z);
+
   // ?{?X??F????Z?b?g?i?O???Q?[???????????N???A?j
   restoreBossOriginalColors();
 
