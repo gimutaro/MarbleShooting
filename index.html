@@ -133,7 +133,7 @@ import * as THREE from "three";
 import { SparkRenderer, SplatMesh } from "@sparkjsdev/spark";
 
 const SPZ_URL = "https://space-gimu.s3.ap-northeast-1.amazonaws.com/space.spz";
-const MOVE_SPEED = 3.8;
+const MOVE_SPEED = 6.0;
 const MOBILE_MOVE_SPEED = 6.0;
 const POINTER_SENSITIVITY = 0.002;
 const PITCH_LIMIT = Math.PI / 2 - 0.01;
@@ -2367,10 +2367,74 @@ if (isMobile) {
   }
 }
 
+// Hide the on-screen shoot button on desktop
+if (!isMobile && shootButton) {
+  shootButton.style.display = "none";
+}
+
 renderer.domElement.addEventListener("touchstart", onTouchStartLook, { passive: false });
 renderer.domElement.addEventListener("touchmove", onTouchMoveLook, { passive: false });
 renderer.domElement.addEventListener("touchend", onTouchEndLook);
 renderer.domElement.addEventListener("touchcancel", onTouchEndLook);
+
+// Desktop keyboard movement (WASD). Updates moveJoystickData so existing movement works.
+if (!isMobile) {
+  const keyState = { w: false, a: false, s: false, d: false };
+
+  function shouldIgnoreKeyInput() {
+    const el = document.activeElement;
+    if (!el) return false;
+    const tag = el.tagName;
+    return tag === "INPUT" || tag === "TEXTAREA" || el.isContentEditable === true;
+  }
+
+  function recalcKeyboardMove() {
+    let x = 0;
+    let y = 0;
+    if (keyState.a) x -= 1;
+    if (keyState.d) x += 1;
+    if (keyState.w) y -= 1;
+    if (keyState.s) y += 1;
+    if (x !== 0 || y !== 0) {
+      const len = Math.hypot(x, y) || 1;
+      x /= len;
+      y /= len;
+    }
+    moveJoystickData = { x, y };
+  }
+
+  window.addEventListener("keydown", (e) => {
+    if (shouldIgnoreKeyInput()) return;
+    let handled = false;
+    switch (e.code) {
+      case "KeyW": keyState.w = true; handled = true; break;
+      case "KeyA": keyState.a = true; handled = true; break;
+      case "KeyS": keyState.s = true; handled = true; break;
+      case "KeyD": keyState.d = true; handled = true; break;
+      default: break;
+    }
+    if (handled) {
+      e.preventDefault();
+      recalcKeyboardMove();
+    }
+  });
+
+  window.addEventListener("keyup", (e) => {
+    if (shouldIgnoreKeyInput()) return;
+    let handled = false;
+    switch (e.code) {
+      case "KeyW": keyState.w = false; handled = true; break;
+      case "KeyA": keyState.a = false; handled = true; break;
+      case "KeyS": keyState.s = false; handled = true; break;
+      case "KeyD": keyState.d = false; handled = true; break;
+      default: break;
+    }
+    if (handled) {
+      e.preventDefault();
+      recalcKeyboardMove();
+    }
+  });
+}
 
 document.addEventListener("mousemove", (event) => {
   if (!pointerLocked) return;
